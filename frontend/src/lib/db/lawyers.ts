@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums } from '@/types/supabase'
 
 export async function getLawyerProfile(userId: string) {
   const { data, error } = await supabase
@@ -19,7 +20,7 @@ export async function updateLawyerProfile(userId: string, updates: {
   practice_state?: string
   practice_district?: string
   court_types?: string[]
-  specialisations?: string[]
+  specialisations?: Enums<'legal_domain'>[]
   experience_years?: number
   bio?: string
   languages?: string[]
@@ -46,7 +47,7 @@ export async function searchLawyers({
   limit = 10,
   offset = 0
 }: {
-  domain?: string
+  domain?: Enums<'legal_domain'>
   state?: string
   district?: string
   budget_min?: number

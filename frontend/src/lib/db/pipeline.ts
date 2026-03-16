@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums } from '@/types/supabase'
 
 export async function createOffer(lawyerId: string, payload: {
   case_id: string
@@ -18,7 +19,7 @@ export async function createOffer(lawyerId: string, payload: {
   return { data, error }
 }
 
-export async function getLawyerPipeline(lawyerId: string, stage?: string) {
+export async function getLawyerPipeline(lawyerId: string, stage?: Enums<'pipeline_stage'>) {
   let query = supabase
     .from('case_pipeline')
     .select(`
@@ -47,8 +48,8 @@ export async function getLawyerPipeline(lawyerId: string, stage?: string) {
   return { data, error }
 }
 
-export async function updatePipelineStage(pipelineId: string, stage: string, extras?: {
-  outcome?: string
+export async function updatePipelineStage(pipelineId: string, stage: Enums<'pipeline_stage'>, extras?: {
+  outcome?: Enums<'case_outcome'>
   next_milestone?: string
   lawyer_notes?: string
   show_on_profile?: boolean

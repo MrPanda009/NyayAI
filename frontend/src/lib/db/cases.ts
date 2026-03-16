@@ -1,7 +1,8 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums, Json } from '@/types/supabase'
 
 export async function createCase(citizenId: string, payload: {
-  domain: string
+  domain: Enums<'legal_domain'>
   incident_description: string
   incident_date?: string
   incident_location?: string
@@ -55,12 +56,12 @@ export async function getCaseById(caseId: string) {
 
 export async function updateCase(caseId: string, updates: {
   title?: string
-  status?: string
-  confirmed_facts?: object
-  applicable_laws?: object
-  evidence_inventory?: object
-  recommended_strategy?: object
-  case_brief?: object
+  status?: Enums<'case_status'>
+  confirmed_facts?: Json
+  applicable_laws?: Json
+  evidence_inventory?: Json
+  recommended_strategy?: Json
+  case_brief?: Json
   confidence_score?: number
   analysis_duration_ms?: number
   is_seeking_lawyer?: boolean
@@ -86,7 +87,7 @@ export async function getOpenCasesForLawyers({
   limit = 20,
   offset = 0
 }: {
-  domain?: string
+  domain?: Enums<'legal_domain'>
   state?: string
   district?: string
   budget_min?: number
