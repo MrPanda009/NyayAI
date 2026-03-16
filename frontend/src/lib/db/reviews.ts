@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums } from '@/types/supabase'
 
 export async function submitReview(payload: {
   lawyer_id: string
@@ -7,7 +8,7 @@ export async function submitReview(payload: {
   pipeline_id: string
   rating: number
   review_text?: string
-  outcome?: string
+  outcome?: Enums<'case_outcome'>
 }) {
   const { data, error } = await supabase
     .from('lawyer_reviews')

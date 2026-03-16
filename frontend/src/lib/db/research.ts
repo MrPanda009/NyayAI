@@ -1,12 +1,13 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums, Json } from '@/types/supabase'
 
 export async function saveResearch(lawyerId: string, payload: {
   case_id?: string
   query: string
-  domain?: string
-  result: object
-  statutes?: object
-  case_law?: object
+  domain?: Enums<'legal_domain'>
+  result: Json
+  statutes?: Json
+  case_law?: Json
   confidence?: number
 }) {
   const { data, error } = await supabase

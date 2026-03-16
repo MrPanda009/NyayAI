@@ -1,10 +1,11 @@
 import { supabase } from '@/lib/supabase/client'
+import type { Enums } from '@/types/supabase'
 
 export async function uploadCaseDocument(
   citizenId: string,
   caseId: string,
   file: File,
-  documentType: string
+  documentType: Enums<'document_type'>
 ) {
   // Upload to Supabase Storage
   const filePath = `${citizenId}/${caseId}/${Date.now()}_${file.name}`
