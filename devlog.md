@@ -1,0 +1,1 @@
+- c77259e - updated supabase types to include agent inputs (Pranika, 2026-03-17)
