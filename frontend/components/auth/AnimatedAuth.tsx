@@ -7,6 +7,7 @@ import { User, Mail } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
 import { useTheme } from '../themeprovider';
+// @ts-ignore
 import ReCAPTCHA from 'react-google-recaptcha';
 
 // Register the hook to ensure proper cleanup in React strict mode
@@ -35,7 +36,6 @@ export interface AnimatedAuthProps {
   leftPanelSubtitle?: string;
   rightPanelTitle?: string;
   rightPanelSubtitle?: string;
-  // new props for panel text colors
   leftPanelTitleColor?: string;
   leftPanelSubtitleColor?: string;
   rightPanelTitleColor?: string;
@@ -46,7 +46,8 @@ export interface AnimatedAuthProps {
   rightPanelImage?: string;
 }
 
-const roles = ['admin', 'authority', 'citizen', 'worker'] as const;
+// ✅ 'admin' removed — cannot be self-assigned via signup
+const roles = ['citizen', 'lawyer'] as const;
 type Role = (typeof roles)[number];
 
 export const ANIMATED_AUTH_TRANSITION_TINT_COLOR = '#d2b48c';
@@ -61,7 +62,6 @@ export const AUTH_COLORS_LIGHT = {
   secondaryTextColor: '#6b7280',
   borderColor: '#d1d5db',
   transitionTintColor: '#d2b48c',
-  /* dark-mode fallbacks included for convenience */
   themeColorDark: '#8c6a5d',
   glowColorDark: 'rgba(16, 5, 4, 0.6)',
   backgroundColorDark: '#2c241b',
@@ -83,7 +83,6 @@ export const AUTH_COLORS_DARK = {
   secondaryTextColor: '#9ca3af',
   borderColor: '#4b5563',
   transitionTintColor: '#2c241b',
-  /* include original light fallbacks where sensible */
   themeColorDark: '#8c6a5d',
   glowColorDark: 'rgba(16, 5, 4, 0.6)',
   backgroundColorDark: '#2c241b',
@@ -118,7 +117,6 @@ export default function AnimatedAuth({
   leftPanelSubtitle = 'Lorem ipsum dolor sit amet consectetur adipisicing.',
   rightPanelTitle = 'HELLO FRIEND!',
   rightPanelSubtitle = 'Enter your personal details and start your journey with us.',
-  // default text colors
   leftPanelTitleColor = '#ffffff',
   leftPanelSubtitleColor = 'rgb(209 213 219)',
   rightPanelTitleColor = '#ffffff',
@@ -144,7 +142,6 @@ export default function AnimatedAuth({
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
-  const [signupPhone, setSignupPhone] = useState('');
   const [signupRole, setSignupRole] = useState<Role>('citizen');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,13 +175,7 @@ export default function AnimatedAuth({
     gsap.fromTo(
       containerRef.current,
       { autoAlpha: 0, y: 40, scale: 0.98 },
-      {
-        autoAlpha: 1,
-        y: 0,
-        scale: 1,
-        duration: 0.8,
-        ease: 'power3.out',
-      }
+      { autoAlpha: 1, y: 0, scale: 1, duration: 0.8, ease: 'power3.out' }
     );
   }, { scope: containerRef });
 
@@ -192,12 +183,8 @@ export default function AnimatedAuth({
     const tl = gsap.timeline({ defaults: { ease: 'power3.inOut', duration: 0.8 } });
 
     if (isLogin) {
-      // Transition to Login State (Overlay moves right)
       tl.to(overlayTintRef.current, { autoAlpha: 1, duration: 0.25, ease: 'power1.out' }, 0)
-      tl.to(overlayRef.current, {
-        left: '45%',
-        clipPath: 'polygon(20% 0%, 100% 0%, 100% 100%, 0% 100%)',
-      }, 0)
+        .to(overlayRef.current, { left: '45%', clipPath: 'polygon(20% 0%, 100% 0%, 100% 100%, 0% 100%)' }, 0)
         .to(overlayTintRef.current, { autoAlpha: 0, duration: 0.35, ease: 'power1.in' }, 0.55)
         .to(overlayLeftTextRef.current, { autoAlpha: 0, x: -50 }, 0)
         .to(overlayRightTextRef.current, { autoAlpha: 1, x: 0 }, 0.2)
@@ -206,12 +193,8 @@ export default function AnimatedAuth({
         .to(signupFormRef.current, { autoAlpha: 0, x: 50 }, 0)
         .to(loginFormRef.current, { autoAlpha: 1, x: 0 }, 0.2);
     } else {
-      // Transition to Sign Up State (Overlay moves left)
       tl.to(overlayTintRef.current, { autoAlpha: 1, duration: 0.25, ease: 'power1.out' }, 0)
-      tl.to(overlayRef.current, {
-        left: '0%',
-        clipPath: 'polygon(0% 0%, 100% 0%, 80% 100%, 0% 100%)',
-      }, 0)
+        .to(overlayRef.current, { left: '0%', clipPath: 'polygon(0% 0%, 100% 0%, 80% 100%, 0% 100%)' }, 0)
         .to(overlayTintRef.current, { autoAlpha: 0, duration: 0.35, ease: 'power1.in' }, 0.55)
         .to(overlayRightTextRef.current, { autoAlpha: 0, x: 50 }, 0)
         .to(overlayLeftTextRef.current, { autoAlpha: 1, x: 0 }, 0.2)
@@ -244,11 +227,11 @@ export default function AnimatedAuth({
     });
     const verifyData = await verifyRes.json();
     if (!verifyData.success) {
-      const message =
+      const msg =
         typeof verifyData.message === 'string' && verifyData.message.trim().length > 0
           ? verifyData.message
           : 'reCAPTCHA verification failed. Please try again.';
-      setError(message);
+      setError(msg);
       recaptchaRef.current?.reset();
       return;
     }
@@ -275,13 +258,13 @@ export default function AnimatedAuth({
       return;
     }
 
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
+    const { data: roleData, error: roleError } = await supabase
+      .from('user_roles')
       .select('role')
       .eq('id', userId)
       .single();
 
-    if (profileError || !profile) {
+    if (roleError || !roleData) {
       setError('Could not verify role. Please try again.');
       await supabase.auth.signOut();
       setLoading(false);
@@ -289,18 +272,20 @@ export default function AnimatedAuth({
       return;
     }
 
-    if (!roles.includes(profile.role as Role)) {
-      setError('Invalid user role. Please contact support.');
-      await supabase.auth.signOut();
-      setLoading(false);
-      recaptchaRef.current?.reset();
-      return;
-    }
+    const userRole = roleData.role;
 
     setLoading(false);
-    router.push(`/${profile.role}`);
+
+    if (userRole === 'lawyer') {
+      router.push('/portal/dashboard');
+    } else if (userRole === 'admin') {
+      router.push('/admin/dashboard');
+    } else {
+      router.push('/citizen/home');
+    }
   };
 
+  // ✅ FIX: only passes metadata — trigger handles all DB writes
   const handleSignup = async () => {
     if (!signupEmail || !signupPassword) {
       setError('Email and password are required.');
@@ -311,41 +296,26 @@ export default function AnimatedAuth({
     setMessage('');
     setLoading(true);
 
-    const { data, error: signupError } = await supabase.auth.signUp({
+    const { error: signupError } = await supabase.auth.signUp({
       email: signupEmail.trim(),
       password: signupPassword,
+      options: {
+        data: {
+          // Trigger reads this → inserts into user_roles + correct profile table
+          role: signupRole,
+          full_name: signupName.trim() || null,
+        },
+      },
     });
+
+    setLoading(false);
 
     if (signupError) {
       setError(signupError.message);
-      setLoading(false);
       return;
     }
 
-    const userId = data.user?.id;
-    const userEmail = data.user?.email;
-
-    if (userId && userEmail) {
-      const { error: profileError } = await supabase.from('profiles').upsert(
-        {
-          id: userId,
-          email: userEmail,
-          full_name: signupName || null,
-          phone: signupPhone || null,
-          role: signupRole,
-        },
-        { onConflict: 'id' }
-      );
-
-      if (profileError) {
-        setError(profileError.message);
-        setLoading(false);
-        return;
-      }
-    }
-
-    setLoading(false);
-    setMessage('Account created. Please login.');
+    setMessage('Account created! Check your email to confirm, then login.');
     setIsLogin(true);
   };
 
@@ -478,13 +448,9 @@ export default function AnimatedAuth({
               theme={isDark ? 'dark' : 'light'}
               size="normal"
               className="mt-4"
-              onExpired={() => {
-                setError('reCAPTCHA expired. Please complete it again.');
-              }}
+              onExpired={() => setError('reCAPTCHA expired. Please complete it again.')}
               onErrored={() => {
-                console.error(
-                  'reCAPTCHA widget error. This usually means the site key is invalid for this domain or key type.'
-                );
+                console.error('reCAPTCHA widget error.');
                 setError('reCAPTCHA failed to load. Please try again later.');
               }}
             />
@@ -512,11 +478,7 @@ export default function AnimatedAuth({
               'Please wait...'
             ) : (
               <>
-                <img
-                  src="/Googe_icon.svg"
-                  alt="Google logo"
-                  className="h-5 w-5"
-                />
+                <img src="/Googe_icon.svg" alt="Google logo" className="h-5 w-5" />
                 <span>Login via Google</span>
               </>
             )}
@@ -562,18 +524,6 @@ export default function AnimatedAuth({
             </div>
             <div className="relative border-b border-[var(--auth-border)] pb-2">
               <input
-                type="text"
-                placeholder="Phone"
-                value={signupPhone}
-                onChange={(e) => setSignupPhone(e.target.value)}
-                className="w-full bg-transparent outline-none text-[var(--auth-text)] text-xs placeholder-[var(--auth-placeholder)]"
-              />
-              <span className="absolute right-0 text-[var(--auth-text-secondary)]">
-                <User size={16} />
-              </span>
-            </div>
-            <div className="relative border-b border-[var(--auth-border)] pb-2">
-              <input
                 type={showSignupPassword ? 'text' : 'password'}
                 placeholder="Password"
                 value={signupPassword}
@@ -591,6 +541,7 @@ export default function AnimatedAuth({
             <div>
               <p className="text-[11px] mb-1.5" style={{ color: activePlaceholderColor }}>Role</p>
               <div className="flex flex-wrap gap-3">
+                {/* ✅ Only 'citizen' and 'lawyer' shown — admin cannot be self-assigned */}
                 {roles.map((role) => (
                   <label key={role} className="text-[11px] capitalize flex items-center gap-1.5" style={{ color: activePlaceholderColor }}>
                     <input
@@ -625,11 +576,7 @@ export default function AnimatedAuth({
               'Please wait...'
             ) : (
               <>
-                <img
-                  src="/Googe_icon.svg"
-                  alt="Google logo"
-                  className="h-4 w-4"
-                />
+                <img src="/Googe_icon.svg" alt="Google logo" className="h-4 w-4" />
                 <span>Signup via Google</span>
               </>
             )}
@@ -647,7 +594,6 @@ export default function AnimatedAuth({
           ref={overlayRef}
           className="absolute top-0 h-full w-[55%] z-20 hidden md:flex overflow-hidden shadow-2xl"
           style={{
-            // Initial state: Covering left side (Sign Up mode)
             left: '0%',
             clipPath: 'polygon(0% 0%, 100% 0%, 80% 100%, 0% 100%)',
           }}
@@ -668,40 +614,26 @@ export default function AnimatedAuth({
             style={{ backgroundColor: activeTransitionTintColor }}
           />
 
-          {/* Overlay Content Left (Visible when overlay is on the left) */}
           <div
             ref={overlayLeftTextRef}
             className="absolute inset-0 z-20 flex flex-col justify-between pt-6 pb-6 items-start px-12 w-[calc(100%/0.55*0.5)]"
           >
-            <h1
-              className="text-4xl font-bold leading-tight"
-              style={{ color: leftPanelTitleColor }}
-            >
+            <h1 className="text-4xl font-bold leading-tight" style={{ color: leftPanelTitleColor }}>
               {leftPanelTitle}
             </h1>
-            <p
-              className="text-sm max-w-[260px] leading-relaxed mt-3"
-              style={{ color: leftPanelSubtitleColor }}
-            >
+            <p className="text-sm max-w-[260px] leading-relaxed mt-3" style={{ color: leftPanelSubtitleColor }}>
               {leftPanelSubtitle}
             </p>
           </div>
 
-          {/* Overlay Content Right (Visible when overlay is on the right) */}
           <div
             ref={overlayRightTextRef}
             className="absolute right-0 inset-y-0 z-20 flex flex-col justify-between pt-6 pb-6 items-end px-12 w-[calc(100%/0.55*0.5)] text-right opacity-0"
           >
-            <h1
-              className="text-4xl font-bold leading-tight"
-              style={{ color: rightPanelTitleColor }}
-            >
+            <h1 className="text-4xl font-bold leading-tight" style={{ color: rightPanelTitleColor }}>
               {rightPanelTitle}
             </h1>
-            <p
-              className="text-sm max-w-[260px] leading-relaxed mt-3"
-              style={{ color: rightPanelSubtitleColor }}
-            >
+            <p className="text-sm max-w-[260px] leading-relaxed mt-3" style={{ color: rightPanelSubtitleColor }}>
               {rightPanelSubtitle}
             </p>
           </div>

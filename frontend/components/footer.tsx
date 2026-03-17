@@ -14,7 +14,7 @@ export interface ColorSwatch {
 }
 
 export interface SocialLink {
-  icon: React.ElementType;
+  icon: any;
   url: string;
   ariaLabel: string;
 }
@@ -33,7 +33,7 @@ export interface FooterThemeColors {
 export interface FooterProps {
   /** Logo configuration */
   logoText?: string;
-  logoIcon?: React.ElementType;
+  logoIcon?: any;
   
   /** Newsletter configuration */
   subscribePlaceholder?: string;

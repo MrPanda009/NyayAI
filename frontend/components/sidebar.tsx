@@ -12,7 +12,7 @@ import { useTheme } from './themeprovider'; // Adjust path to your ThemeProvider
 
 export interface NavItem {
   id: string;
-  icon: React.ElementType;
+  icon: any;
   label?: string;
   href?: string;
   onClick?: () => void;
@@ -33,7 +33,7 @@ export interface SidebarProps {
 
   /** Configuration for the bottom/end of the sidebar */
   showThemeToggle?: boolean;
-  helpIcon?: React.ElementType;
+  helpIcon?: any;
   onHelpClick?: () => void;
 
   /** Theme & Color Overrides */

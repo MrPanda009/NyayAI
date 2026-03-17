@@ -45,17 +45,34 @@ export async function GET(request: Request) {
         return NextResponse.redirect(`${origin}${next}`)
       }
 
-      const { data: roleData } = await supabase
+      let { data: roleData } = await supabase
         .from('user_roles')
         .select('role')
         .eq('id', user.id)
         .single()
 
+      // If no role exists, it's a new OAuth user. Default to 'citizen'.
+      if (!roleData) {
+        const { error: insertError } = await supabase
+          .from('user_roles')
+          .insert({ id: user.id, role: 'citizen' })
+
+        if (!insertError) {
+          roleData = { role: 'citizen' }
+          // Also create the citizen profile
+          await supabase.from('citizen_profiles').insert({
+            id: user.id,
+            email: user.email,
+            full_name: user.user_metadata.full_name || user.user_metadata.name || null
+          })
+        }
+      }
+
       if (roleData?.role === 'lawyer') {
         return NextResponse.redirect(`${origin}/portal/dashboard`)
       }
 
-      return NextResponse.redirect(`${origin}/dashboard`)
+      return NextResponse.redirect(`${origin}/citizen/home`)
     }
   }
 
