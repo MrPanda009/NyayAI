@@ -29,6 +29,36 @@ logger = logging.getLogger(__name__)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
+def _call_with_retry(prompt: str, system_prompt: str, client: Groq, max_attempts: int = 3) -> dict:
+    """Call Groq with exponential backoff and JSON validation."""
+    last_error = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            raw = response.choices[0].message.content.strip()
+            
+            if raw.startswith("```"):
+                raw = raw.split("```")[1].lstrip("json").strip()
+                
+            return json.loads(raw)
+                
+        except Exception as e:
+            last_error = e
+            wait = 2 ** attempt
+            logger.warning(f"[agent4] attempt {attempt} failed: {e} — retrying in {wait}s")
+            time.sleep(wait)
+            
+    raise RuntimeError(f"Groq failed after {max_attempts} attempts: {last_error}")
+
 # Ensure output directory exists for exported files
 OUTPUT_DIR = os.path.join(os.getcwd(), "output_docs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -89,22 +119,7 @@ You must output ONLY valid JSON.
   "document_title": "The formal title of the document"
 }"""
 
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        temperature=0.1,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    
-    raw = response.choices[0].message.content.strip()
-
-    if raw.startswith("```"):
-        raw = raw.split("```")[1].lstrip("json").strip()
-
-    return json.loads(raw)
+    return _call_with_retry(prompt, system_prompt, client)
 
 
 # ── File Exporters ────────────────────────────────────────────────────────────

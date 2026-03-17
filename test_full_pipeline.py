@@ -1,7 +1,7 @@
 import requests
 import json
 
-url = "http://localhost:8000/analyze"
+url = "http://localhost:8001/analyze"
 # The user provided "user_input" but the API expects "raw_narrative" based on my previous implementation.
 # However, I should check if the user wants me to support "user_input" or just use the current schema.
 # I will use "raw_narrative" as per the IntakeRequest model I defined.
