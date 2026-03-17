@@ -7,10 +7,7 @@ import { User, Mail } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
 import { useTheme } from '../themeprovider';
-// @ts-ignore
-import ReCAPTCHA from 'react-google-recaptcha';
 
-// Register the hook to ensure proper cleanup in React strict mode
 gsap.registerPlugin(useGSAP);
 
 export interface AnimatedAuthProps {
@@ -156,9 +153,6 @@ export default function AnimatedAuth({
   const overlayRightTextRef = useRef<HTMLDivElement>(null);
   const loginFormRef = useRef<HTMLDivElement>(null);
   const signupFormRef = useRef<HTMLDivElement>(null);
-  const recaptchaRef = useRef<ReCAPTCHA>(null);
-  const recaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY?.trim() ?? '';
-  const isRecaptchaConfigured = recaptchaSiteKey.length > 0;
 
   const isDark = theme === 'dark';
   const activeThemeColor = isDark ? themeColorDark : themeColor;
@@ -205,87 +199,6 @@ export default function AnimatedAuth({
     }
   }, { dependencies: [isLogin], scope: containerRef });
 
-  const handleLogin = async () => {
-    setError('');
-    setMessage('');
-
-    if (!isRecaptchaConfigured) {
-      setError('reCAPTCHA is not configured. Add NEXT_PUBLIC_RECAPTCHA_SITE_KEY in apps/web/.env.local and restart the dev server.');
-      return;
-    }
-
-    const token = recaptchaRef.current?.getValue();
-    if (!token) {
-      setError('Please complete the reCAPTCHA.');
-      return;
-    }
-
-    const verifyRes = await fetch('/api/verify-recaptcha', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
-    });
-    const verifyData = await verifyRes.json();
-    if (!verifyData.success) {
-      const msg =
-        typeof verifyData.message === 'string' && verifyData.message.trim().length > 0
-          ? verifyData.message
-          : 'reCAPTCHA verification failed. Please try again.';
-      setError(msg);
-      recaptchaRef.current?.reset();
-      return;
-    }
-
-    setLoading(true);
-
-    const { data, error: loginError } = await supabase.auth.signInWithPassword({
-      email: loginEmail.trim(),
-      password: loginPassword,
-    });
-
-    if (loginError) {
-      setError(loginError.message);
-      setLoading(false);
-      recaptchaRef.current?.reset();
-      return;
-    }
-
-    const userId = data.user?.id;
-    if (!userId) {
-      setError('Login failed. Please try again.');
-      setLoading(false);
-      recaptchaRef.current?.reset();
-      return;
-    }
-
-    const { data: roleData, error: roleError } = await supabase
-      .from('user_roles')
-      .select('role')
-      .eq('id', userId)
-      .single();
-
-    if (roleError || !roleData) {
-      setError('Could not verify role. Please try again.');
-      await supabase.auth.signOut();
-      setLoading(false);
-      recaptchaRef.current?.reset();
-      return;
-    }
-
-    const userRole = roleData.role;
-
-    setLoading(false);
-
-    if (userRole === 'lawyer') {
-      router.push('/portal/dashboard');
-    } else if (userRole === 'admin') {
-      router.push('/admin/dashboard');
-    } else {
-      router.push('/citizen/home');
-    }
-  };
-
-  // ✅ FIX: only passes metadata — trigger handles all DB writes
   const handleSignup = async () => {
     if (!signupEmail || !signupPassword) {
       setError('Email and password are required.');
@@ -296,12 +209,11 @@ export default function AnimatedAuth({
     setMessage('');
     setLoading(true);
 
-    const { error: signupError } = await supabase.auth.signUp({
+    const { data, error: signupError } = await supabase.auth.signUp({
       email: signupEmail.trim(),
       password: signupPassword,
       options: {
         data: {
-          // Trigger reads this → inserts into user_roles + correct profile table
           role: signupRole,
           full_name: signupName.trim() || null,
         },
@@ -315,8 +227,77 @@ export default function AnimatedAuth({
       return;
     }
 
-    setMessage('Account created! Check your email to confirm, then login.');
-    setIsLogin(true);
+    // Supabase returns identities=[] when email already exists
+    if (data.user && data.user.identities?.length === 0) {
+      setError('An account with this email already exists. Please login.');
+      return;
+    }
+
+    // Email confirmation ON → no session yet
+    if (!data.session) {
+      setMessage('Account created! Check your email to confirm, then login.');
+      setIsLogin(true);
+      return;
+    }
+
+    // Email confirmation OFF → redirect immediately
+    const userRole = data.user?.user_metadata?.role ?? 'citizen';
+    if (userRole === 'lawyer') {
+      router.push('/portal/dashboard');
+    } else {
+      router.push('/citizen/home');
+    }
+  };
+
+  const handleLogin = async () => {
+    setError('');
+    setMessage('');
+    setLoading(true);
+
+    const { data, error: loginError } = await supabase.auth.signInWithPassword({
+      email: loginEmail.trim(),
+      password: loginPassword,
+    });
+
+    if (loginError) {
+      if (loginError.message.toLowerCase().includes('email not confirmed')) {
+        setError('Please confirm your email before logging in. Check your inbox.');
+      } else {
+        setError(loginError.message);
+      }
+      setLoading(false);
+      return;
+    }
+
+    const userId = data.user?.id;
+    if (!userId) {
+      setError('Login failed. Please try again.');
+      setLoading(false);
+      return;
+    }
+
+    const { data: roleData, error: roleError } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('id', userId)
+      .single();
+
+    if (roleError || !roleData) {
+      setError('Could not verify role. Please try again.');
+      await supabase.auth.signOut();
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+
+    if (roleData.role === 'lawyer') {
+      router.push('/portal/dashboard');
+    } else if (roleData.role === 'admin') {
+      router.push('/admin/dashboard');
+    } else {
+      router.push('/citizen/home');
+    }
   };
 
   const handleGoogleAuth = async () => {
@@ -327,7 +308,11 @@ export default function AnimatedAuth({
     const { error: googleError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback${!isLogin ? `?role=${signupRole}` : ''}`,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
+        },
       },
     });
 
@@ -364,7 +349,6 @@ export default function AnimatedAuth({
       className="flex items-center justify-center min-h-screen p-4 bg-cover bg-center"
       style={{ background: activeBackdrop }}
     >
-      {/* Main Container */}
       <div
         ref={containerRef}
         className="relative w-full max-w-4xl h-[600px] md:h-[500px] rounded-xl overflow-hidden flex"
@@ -378,7 +362,7 @@ export default function AnimatedAuth({
         } as React.CSSProperties}
       >
         {(error || message) && (
-          <div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 px-4 py-2 text-sm rounded-lg border border-white/20 bg-black/70 text-white">
+          <div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 px-4 py-2 text-sm rounded-lg border border-white/20 bg-black/70 text-white whitespace-nowrap">
             {error || message}
           </div>
         )}
@@ -396,6 +380,7 @@ export default function AnimatedAuth({
                 placeholder="Email"
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                 className="w-full bg-transparent outline-none text-[var(--auth-text)] text-sm placeholder-[var(--auth-placeholder)]"
               />
               <span className="absolute right-0 text-[var(--auth-text-secondary)]">
@@ -408,6 +393,7 @@ export default function AnimatedAuth({
                 placeholder="Password"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                 className="w-full bg-transparent outline-none text-[var(--auth-text)] text-sm placeholder-[var(--auth-placeholder)]"
               />
               <button
@@ -441,28 +427,11 @@ export default function AnimatedAuth({
               </button>
             </div>
           </div>
-          {isRecaptchaConfigured ? (
-            <ReCAPTCHA
-              ref={recaptchaRef}
-              sitekey={recaptchaSiteKey}
-              theme={isDark ? 'dark' : 'light'}
-              size="normal"
-              className="mt-4"
-              onExpired={() => setError('reCAPTCHA expired. Please complete it again.')}
-              onErrored={() => {
-                console.error('reCAPTCHA widget error.');
-                setError('reCAPTCHA failed to load. Please try again later.');
-              }}
-            />
-          ) : (
-            <p className="mt-4 text-xs text-red-300">
-              reCAPTCHA is unavailable. Add NEXT_PUBLIC_RECAPTCHA_SITE_KEY in apps/web/.env.local and restart.
-            </p>
-          )}
+
           <button
             onClick={handleLogin}
             disabled={loading}
-            className="w-full mt-5 py-3 rounded-full text-white font-semibold transition-transform hover:scale-105"
+            className="w-full mt-6 py-3 rounded-full text-white font-semibold transition-transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ backgroundColor: activeThemeColor }}
           >
             {loading ? 'Please wait...' : loginTitle}
@@ -471,7 +440,7 @@ export default function AnimatedAuth({
             type="button"
             onClick={handleGoogleAuth}
             disabled={loading}
-            className="w-full mt-3 py-3 rounded-full text-[var(--auth-text)] text-sm font-semibold border bg-transparent transition-transform transition-colors hover:scale-105 hover:bg-white/10 flex items-center justify-center space-x-2"
+            className="w-full mt-3 py-3 rounded-full text-[var(--auth-text)] text-sm font-semibold border bg-transparent transition-transform transition-colors hover:scale-105 hover:bg-white/10 flex items-center justify-center space-x-2 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ borderColor: activeThemeColor }}
           >
             {loading ? (
@@ -541,9 +510,8 @@ export default function AnimatedAuth({
             <div>
               <p className="text-[11px] mb-1.5" style={{ color: activePlaceholderColor }}>Role</p>
               <div className="flex flex-wrap gap-3">
-                {/* ✅ Only 'citizen' and 'lawyer' shown — admin cannot be self-assigned */}
                 {roles.map((role) => (
-                  <label key={role} className="text-[11px] capitalize flex items-center gap-1.5" style={{ color: activePlaceholderColor }}>
+                  <label key={role} className="text-[11px] capitalize flex items-center gap-1.5 cursor-pointer" style={{ color: activePlaceholderColor }}>
                     <input
                       type="radio"
                       name="signup-role"
@@ -560,7 +528,7 @@ export default function AnimatedAuth({
           <button
             onClick={handleSignup}
             disabled={loading}
-            className="w-full mt-4 py-2.5 rounded-full text-white text-sm font-semibold transition-transform hover:scale-105"
+            className="w-full mt-4 py-2.5 rounded-full text-white text-sm font-semibold transition-transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ backgroundColor: activeThemeColor }}
           >
             {loading ? 'Please wait...' : signupTitle}
@@ -569,7 +537,7 @@ export default function AnimatedAuth({
             type="button"
             onClick={handleGoogleAuth}
             disabled={loading}
-            className="w-full mt-3 py-2.5 rounded-full text-[var(--auth-text)] text-sm font-semibold border bg-transparent transition-transform transition-colors hover:scale-105 hover:bg-white/10 flex items-center justify-center space-x-2"
+            className="w-full mt-3 py-2.5 rounded-full text-[var(--auth-text)] text-sm font-semibold border bg-transparent transition-transform transition-colors hover:scale-105 hover:bg-white/10 flex items-center justify-center space-x-2 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ borderColor: activeThemeColor }}
           >
             {loading ? (
@@ -613,7 +581,6 @@ export default function AnimatedAuth({
             className="absolute inset-0 opacity-0 z-10"
             style={{ backgroundColor: activeTransitionTintColor }}
           />
-
           <div
             ref={overlayLeftTextRef}
             className="absolute inset-0 z-20 flex flex-col justify-between pt-6 pb-6 items-start px-12 w-[calc(100%/0.55*0.5)]"
@@ -625,7 +592,6 @@ export default function AnimatedAuth({
               {leftPanelSubtitle}
             </p>
           </div>
-
           <div
             ref={overlayRightTextRef}
             className="absolute right-0 inset-y-0 z-20 flex flex-col justify-between pt-6 pb-6 items-end px-12 w-[calc(100%/0.55*0.5)] text-right opacity-0"
