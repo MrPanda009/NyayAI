@@ -25,6 +25,43 @@ MAX_TOKENS = 2048
 MAX_FOLLOWUP_TOKENS = 200
 
 
+def _call_with_retry(prompt: str, system_prompt: str, client: Groq, max_attempts: int = 3, json_mode: bool = True) -> dict:
+    """Call Groq with exponential backoff and JSON validation."""
+    last_error = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            extra_args = {"response_format": {"type": "json_object"}} if json_mode else {}
+            
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                **extra_args
+            )
+            raw = response.choices[0].message.content.strip()
+            
+            # Robust JSON extraction
+            start_idx = raw.find('{')
+            end_idx = raw.rfind('}') + 1
+            if start_idx != -1 and end_idx != 0:
+                raw_json = raw[start_idx:end_idx]
+                return json.loads(raw_json)
+            else:
+                raise ValueError("No JSON found in response")
+                
+        except Exception as e:
+            last_error = e
+            wait = 2 ** attempt
+            logger.warning(f"[groq] attempt {attempt} failed: {e} — retrying in {wait}s")
+            time.sleep(wait)
+            
+    raise RuntimeError(f"Groq failed after {max_attempts} attempts: {last_error}")
+
+
 INTAKE_SYSTEM_PROMPT = """You are a Professional Legal Intake Officer at a high-end Indian law firm.
 
 Your job is to analyse a citizen's raw narrative and extract a precise, structured incident report. 
@@ -40,6 +77,20 @@ Return ONLY valid JSON.
 
 If the user is just saying hello, return "GREETING" in intent. If the input is nonsensical/gibberish, return "ABSURD" in intent. Otherwise return "LEGAL".
 
+7. ALLOWED CATEGORIES: You MUST categorize the legal issue into one of these strict keys for the `incident_type` field:
+   - `consumer` (Consumer disputes, product defects, services)
+   - `tenant` (Rent, eviction, landlord issues)
+   - `labour` (Employment, salary, harassment at work)
+   - `criminal` (Theft, assault, FIRs, bail)
+   - `cyber` (Online fraud, hacking, harassment)
+   - `property` (Land disputes, inheritance, registration)
+   - `family` (Marriage, custody, inheritance)
+   - `divorce` (Separation, alimony)
+   - `debt_recovery` (Loans, recovery, cheque bounce)
+   - `civil` (General contracts, damages, non-categorized civil)
+   - `other` (Use ONLY if none of the above apply)
+
+Return ONLY valid JSON.
 {
   "intent": "string (GREETING/ABSURD/LEGAL)",
   "new_facts": ["string (Only NEWly discovered facts from the current turn)"],
@@ -48,7 +99,7 @@ If the user is just saying hello, return "GREETING" in intent. If the input is n
   "language_preference": "string (hindi/english/hinglish)",
   "state_jurisdiction": "string (e.g. Delhi, Maharashtra) or null",
   "structured_facts": {
-    "incident_type": "string or null",
+    "incident_type": "string (Must be one of the ALLOWED CATEGORIES keys)",
     "incident_summary": "string or null",
     "incident_date": "string or null",
     "parties": [
@@ -167,29 +218,7 @@ def _call_groq(narrative: str, ocr_context: str, client: Groq):
     if ocr_context:
         content += f"\n\n--- Attached document text ---\n{ocr_context}"
 
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        max_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": INTAKE_SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ],
-    )
-
-    raw = response.choices[0].message.content.strip()
-    
-    # Robust JSON extraction
-    try:
-        start_idx = raw.find('{')
-        end_idx = raw.rfind('}') + 1
-        if start_idx != -1 and end_idx != 0:
-            raw_json = raw[start_idx:end_idx]
-            return json.loads(raw_json)
-        else:
-            raise ValueError("No JSON found in response")
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error(f"JSON parse failed: {exc}")
-        raise ValueError(f"{GROQ_MODEL} returned non-JSON output") from exc
+    return _call_with_retry(content, INTAKE_SYSTEM_PROMPT, client)
 
 
 # ─────────────────────────────────────────────

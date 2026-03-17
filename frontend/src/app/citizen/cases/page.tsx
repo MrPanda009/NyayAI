@@ -30,6 +30,9 @@ export default function CaseHistory() {
   const [searchQuery, setSearchQuery] = useState('');
   const [clickedCardId, setClickedCardId] = useState<string | null>(null);
   const [sortOption, setSortOption] = useState<'latest' | 'oldest' | 'title_asc' | 'title_desc'>('latest');
+  const [cases, setCases] = useState<Case[]>([]);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+
   const { theme, mounted } = useTheme();
   const isDark = mounted && theme === 'dark';
   const [dbCases, setDbCases] = useState<CaseRow[]>([])
@@ -117,6 +120,30 @@ export default function CaseHistory() {
     },
     { scope: pageRef }
   );
+
+  // Fetch cases from backend
+  const fetchCases = async () => {
+    try {
+      const response = await axios.get('http://localhost:8001/cases');
+      if (response.data && response.data.cases) {
+        setCases(response.data.cases);
+      }
+    } catch (error) {
+      console.error("Failed to fetch cases:", error);
+    } finally {
+      setIsInitialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Initial fetch
+    fetchCases();
+
+    // Set up polling every 5 seconds
+    const interval = setInterval(fetchCases, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Card stagger - re-triggers on sort/search
   useGSAP(

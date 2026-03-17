@@ -2,7 +2,7 @@ import requests
 import json
 import uuid
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8001"
 
 def test_stateful_conversation():
     case_id = f"test_{uuid.uuid4().hex[:8]}"
