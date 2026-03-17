@@ -103,6 +103,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   }, []);
   const sidebarRef = useRef<HTMLElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const iconRefs = useRef<(HTMLDivElement | null)[]>([]);
   const labelRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const themeIconRef = useRef<HTMLDivElement | null>(null);
@@ -166,34 +167,64 @@ export const Sidebar: React.FC<SidebarProps> = ({
     mm.add("(min-width: 768px)", () => {
       const labels = labelRefs.current.filter(Boolean);
       
-      // Animate sidebar width
+      // Animate sidebar width with a subtle overshoot for a "premium" feel
       gsap.to(sidebarRef.current, {
         width: isExpanded ? 240 : 90,
-        duration: 0.45,
-        ease: 'power3.inOut',
+        duration: 0.6,
+        ease: isExpanded ? 'back.out(1.1)' : 'power3.inOut',
         overwrite: 'auto',
       });
 
-      // Animate labels
+      // Animate labels with a glide-in effect
       gsap.to(labels, {
         opacity: isExpanded ? 1 : 0,
+        x: isExpanded ? 0 : -10,
         maxWidth: isExpanded ? 200 : 0,
         marginLeft: isExpanded ? 16 : 0,
-        duration: 0.35,
+        duration: 0.5,
         ease: 'power2.inOut',
-        stagger: 0.02,
+        stagger: isExpanded ? 0.05 : 0.02,
         overwrite: 'auto',
       });
     });
 
     mm.add("(max-width: 767px)", () => {
+      const items = iconRefs.current.filter(Boolean);
+
       // Animate mobile drawer position
       gsap.to(sidebarRef.current, {
         x: isExpanded ? 0 : '-100%',
-        duration: 0.4,
-        ease: 'power3.out',
+        duration: 0.5,
+        ease: isExpanded ? 'expo.out' : 'expo.in',
         overwrite: 'auto',
       });
+
+      // Stagger items inside the mobile drawer
+      if (isExpanded) {
+        gsap.fromTo(items, 
+          { y: 15, opacity: 0 },
+          { 
+            y: 0, 
+            opacity: 1, 
+            duration: 0.5, 
+            stagger: 0.06, 
+            ease: 'back.out(1.2)',
+            delay: 0.1,
+            overwrite: 'auto'
+          }
+        );
+      }
+
+      // Backdrop animation
+      if (backdropRef.current) {
+        gsap.to(backdropRef.current, {
+          opacity: isExpanded ? 1 : 0,
+          pointerEvents: isExpanded ? 'auto' : 'none',
+          duration: 0.4,
+          ease: 'power2.out',
+          overwrite: 'auto',
+        });
+      }
     });
 
     return () => mm.revert();
@@ -253,12 +284,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </button>
 
       {/* Backdrop for mobile drawer */}
-      {isExpanded && (
-        <div 
-          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[45] md:hidden transition-opacity duration-300 pointer-events-auto"
-          onClick={() => setIsExpanded(false)}
-        />
-      )}
+      <div 
+        ref={backdropRef}
+        className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[45] md:hidden opacity-0 pointer-events-none"
+        onClick={() => setIsExpanded(false)}
+      />
 
       <aside
         ref={sidebarRef}
