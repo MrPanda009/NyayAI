@@ -12,6 +12,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "agents"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "schemas")))
 
 from orchestrator import build_nyaya_graph
+import json
+import sqlite3
+from datetime import datetime
 
 app = FastAPI(title="NyayaAI API", version="4.0.0")
 
@@ -58,10 +61,64 @@ _case_store: dict[str, dict] = {}
 _case_rounds: dict[str, int] = {}
 MAX_FOLLOWUP_ROUNDS = 2
 
+# --- Database Setup ---
+DB_PATH = "nyayai_cases.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS cases
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  case_id TEXT UNIQUE,
+                  title TEXT,
+                  description TEXT,
+                  domain TEXT,
+                  date TEXT,
+                  status TEXT,
+                  metadata_json TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def save_case_to_db(case_data: dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Extract fields from CaseState
+    case_id = case_data.get("case_id")
+    title = case_data.get("structured_facts", {}).get("incident_type", "Untitled Case").replace("_", " ").title()
+    description = case_data.get("structured_facts", {}).get("incident_summary", "No summary available.")
+    domain = case_data.get("structured_facts", {}).get("incident_type", "General").replace("_", " ").title()
+    date = datetime.now().strftime("%b %d, %Y")
+    status = "Analysis Complete" # Default status when saved
+    metadata_json = json.dumps(case_data)
+    
+    try:
+        c.execute('''INSERT OR REPLACE INTO cases (case_id, title, description, domain, date, status, metadata_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (case_id, title, description, domain, date, status, metadata_json))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_all_cases():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM cases ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
 @app.post("/analyze")
 async def analyze_case(request: IntakeRequest):
     try:
-        # Ensure case_id is present
+        # Use provided case_id or generate a new one if it's a fresh start
         case_id = request.case_id or str(uuid.uuid4())
         
         # 1. Retrieve or Initialize state
@@ -118,6 +175,23 @@ async def analyze_case(request: IntakeRequest):
         logger.error(f"Error in analyze_case: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/save_case/{case_id}")
+async def save_case(case_id: str):
+    case_data = _case_store.get(case_id)
+    if not case_data:
+        raise HTTPException(status_code=404, detail="Case not found in current session")
+    
+    success = save_case_to_db(case_data)
+    if success:
+        return {"status": "success", "message": "Case saved to dashboard"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to save case to database")
+
+@app.get("/cases")
+async def list_cases():
+    cases = get_all_cases()
+    return {"cases": cases}
 
 if __name__ == "__main__":
     import uvicorn

@@ -6,73 +6,23 @@ import { useGSAP } from '@gsap/react';
 import { Footer } from '../../../../components/footer';
 import { Sidebar } from '../../../../components/sidebar';
 import { useTheme } from '../../../../components/themeprovider';
+import axios from 'axios';
+import { useEffect } from 'react';
+
+// Define the Case interface
+interface Case {
+  id: number;
+  case_id: string;
+  title: string;
+  description: string;
+  domain: string;
+  date: string;
+  status: string;
+  metadata_json?: string;
+  icons?: string[];
+}
 
 // Example cases data
-const INITIAL_CASES = [
-  {
-    id: 1,
-    title: "Security Deposit Not Returned by Landlord",
-    description: "Tenant vacated apartment but landlord refused to return ₹50,000 deposit. AI analysis indicates possible tenant protection violation.",
-    domain: "Tenant Law",
-    date: "Mar 14, 2026",
-    status: "Submitted",
-    icons: ["home", "gavel"]
-  },
-  {
-    id: 2,
-    title: "Employer Withheld Final Salary",
-    description: "Employee resigned but employer withheld last salary payment. AI identified potential labour law violation and suggested next steps.",
-    domain: "Labour Law",
-    date: "Mar 12, 2026",
-    status: "Under AI Analysis",
-    icons: []
-  },
-  {
-    id: 3,
-    title: "Online Payment Fraud",
-    description: "Unauthorized UPI transaction detected. AI suggests filing a cybercrime complaint and drafting an FIR.",
-    domain: "Cyber Law",
-    date: "Mar 10, 2026",
-    status: "Drafting Legal Notice",
-    icons: []
-  },
-  {
-    id: 4,
-    title: "Consumer Complaint Against Electronics Store",
-    description: "Customer received defective laptop and was denied refund. AI recommends filing under Consumer Protection Act.",
-    domain: "Consumer Law",
-    date: "Mar 7, 2026",
-    status: "Lawyer Consultation Recommended",
-    icons: []
-  },
-  {
-    id: 5,
-    title: "Property Dispute Resolution",
-    description: "Family property dispute settled through mediation. All parties agreed to the division.",
-    domain: "Property Law",
-    date: "Mar 1, 2026",
-    status: "Case Completed",
-    icons: []
-  },
-  {
-    id: 6,
-    title: "Breach of Freelance Contract",
-    description: "Client refused to pay for completed web development project citing arbitrary quality issues.",
-    domain: "Contract Law",
-    date: "Feb 24, 2026",
-    status: "Drafting Legal Notice",
-    icons: []
-  },
-  {
-    id: 7,
-    title: "Traffic Violation Misidentification",
-    description: "Received e-challan for a vehicle with a similar number plate but different make/model.",
-    domain: "Motor Vehicles Act",
-    date: "Feb 18, 2026",
-    status: "Submitted",
-    icons: []
-  }
-];
 
 export default function CaseHistory() {
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -82,6 +32,9 @@ export default function CaseHistory() {
   const [searchQuery, setSearchQuery] = useState('');
   const [clickedCardId, setClickedCardId] = useState<number | null>(null);
   const [sortOption, setSortOption] = useState<'latest' | 'oldest' | 'title_asc' | 'title_desc'>('latest');
+  const [cases, setCases] = useState<Case[]>([]);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+
   const { theme, mounted } = useTheme();
   const isDark = mounted && theme === 'dark';
 
@@ -93,7 +46,7 @@ export default function CaseHistory() {
   ];
 
   // Filter cases based on search query
-  const filteredCases = INITIAL_CASES.filter(c =>
+  const filteredCases = cases.filter(c =>
     c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.domain.toLowerCase().includes(searchQuery.toLowerCase())
@@ -136,6 +89,30 @@ export default function CaseHistory() {
     },
     { scope: pageRef }
   );
+
+  // Fetch cases from backend
+  const fetchCases = async () => {
+    try {
+      const response = await axios.get('http://localhost:8001/cases');
+      if (response.data && response.data.cases) {
+        setCases(response.data.cases);
+      }
+    } catch (error) {
+      console.error("Failed to fetch cases:", error);
+    } finally {
+      setIsInitialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Initial fetch
+    fetchCases();
+
+    // Set up polling every 5 seconds
+    const interval = setInterval(fetchCases, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Card stagger - re-triggers on sort/search
   useGSAP(
