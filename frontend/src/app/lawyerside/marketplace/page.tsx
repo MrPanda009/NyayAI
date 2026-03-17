@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
 import { Sidebar } from '../../../../components/sidebar';
 import type { NavItem } from '../../../../components/sidebar';
