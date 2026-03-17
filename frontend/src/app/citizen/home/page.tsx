@@ -1,9 +1,15 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
+import NextLink from 'next/link';
 import { Sidebar } from '../../../../components/sidebar';
 import gsap from 'gsap';
 
 import axios from 'axios';
+import { supabase } from '@/lib/supabase/client';
+import { upsertChatbotCase } from '@/lib/db/cases';
+import { setActiveCaseForUser } from '@/lib/db/sessions';
+
+const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '')
 
 interface Message {
   id: string;
@@ -20,6 +26,7 @@ interface Message {
     legalMapping?: any;
     generatedDocuments?: any;
     reasoningTrace?: any;
+    incidentType?: string;
   };
 }
 
@@ -42,7 +49,8 @@ export default function CitizenHome() {
   const headerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
-  const iconsRef = useRef<HTMLDivElement>(null);  useEffect(() => {
+  const iconsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
     // Scroll to bottom whenever messages change or loading state changes
     scrollToBottom();
   }, [messages, isLoading]);
@@ -95,7 +103,23 @@ export default function CitizenHome() {
     setIsLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:8000/analyze', {
+      const { data: authData } = await supabase.auth.getUser()
+      const user = authData.user
+      if (!user) {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'ai',
+          content: 'Please log in to save your case and continue chatting.',
+          timestamp: new Date(),
+          isError: true,
+          type: 'text'
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        setIsLoading(false)
+        return
+      }
+
+      const response = await axios.post(`${BACKEND_URL}/analyze`, {
         case_id: caseId,
         raw_narrative: textToSend,
         language_preference: "english",
@@ -106,6 +130,39 @@ export default function CitizenHome() {
       const result = response.data;
       const newCaseId = result.case_state?.case_id;
       if (newCaseId) setCaseId(newCaseId);
+
+      if (newCaseId) {
+        const intakeStatus: string | undefined = result.intake_status
+        const isComplete = intakeStatus === 'complete'
+        const lawyerRecommended = !!result.case_state?.action_plan?.lawyer_recommended
+
+        const nextStatus =
+          lawyerRecommended && isComplete
+            ? 'seeking_lawyer'
+            : isComplete
+              ? 'analysis_complete'
+              : 'analysis_pending'
+
+        await upsertChatbotCase({
+          caseId: newCaseId,
+          citizenId: user.id,
+          domain: result.case_state?.legal_mapping?.primary_domain ?? 'other',
+          title: result.case_state?.structured_facts?.case_title ?? 'Citizen Chatbot Case',
+          incident_description: result.case_state?.raw_narrative ?? textToSend,
+          status: nextStatus,
+          is_seeking_lawyer: lawyerRecommended && isComplete,
+          confidence_score: typeof result.case_state?.legal_mapping?.legal_standing_score === 'number'
+            ? result.case_state.legal_mapping.legal_standing_score
+            : null,
+          confirmed_facts: result.case_state?.structured_facts ?? null,
+          applicable_laws: result.case_state?.legal_mapping ?? null,
+          recommended_strategy: result.case_state?.action_plan ?? null,
+          case_brief: result.case_state?.case_brief ?? null,
+          evidence_inventory: result.case_state?.evidence_inventory ?? null,
+        })
+
+        await setActiveCaseForUser(user.id, newCaseId)
+      }
 
       let aiMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -127,7 +184,8 @@ export default function CitizenHome() {
           actionPlan: result.case_state?.action_plan,
           legalMapping: result.case_state?.legal_mapping,
           generatedDocuments: result.case_state?.generated_documents,
-          reasoningTrace: result.case_state?.reasoning_trace
+          reasoningTrace: result.case_state?.reasoning_trace,
+          incidentType: result.case_state?.structured_facts?.incident_type
         };
       } else {
         // Fallback for greetings or simple responses from conversational sync
@@ -151,6 +209,16 @@ export default function CitizenHome() {
     }
   };
 
+  const handleDownloadSync = async () => {
+    if (!caseId) return;
+    try {
+      await axios.post(`http://localhost:8001/save_case/${caseId}`);
+      console.log("Case successfully synced to dashboard");
+    } catch (error) {
+      console.error("Failed to sync case to dashboard:", error);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0f1e3f] overflow-hidden" ref={containerRef}>
       {/* Sidebar */}
@@ -167,7 +235,24 @@ export default function CitizenHome() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
             </svg>
           </button>
-          <button className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
+          <button 
+            onClick={() => {
+              setMessages([{
+                id: 'welcome',
+                role: 'ai',
+                type: 'text',
+                content: "Namaste! 👋 I'm NyayaAI. Describe your legal situation, and I will analyze the applicable laws and suggest next steps. You can also upload documents or evidence!",
+                timestamp: new Date()
+              }]);
+              setCaseId(null);
+            }}
+            title="Start New Case"
+            className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
+            <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button title="Notifications" className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
             <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
             </svg>
@@ -303,30 +388,38 @@ export default function CitizenHome() {
                               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
                                 <div className="p-3 rounded-lg bg-white/30 dark:bg-[#0f1e3f]/30 border border-gray-200/30 dark:border-white/5 text-center">
                                   <span className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-white/30 block">Forum</span>
-                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata.actionPlan.forum_selection || 'N/A'}</span>
+                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata?.actionPlan?.forum_selection || 'N/A'}</span>
                                 </div>
                                 <div className="p-3 rounded-lg bg-white/30 dark:bg-[#0f1e3f]/30 border border-gray-200/30 dark:border-white/5 text-center">
                                   <span className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-white/30 block">Timeline</span>
-                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata.actionPlan.timeline_estimate || 'N/A'}</span>
+                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata?.actionPlan?.timeline_estimate || 'N/A'}</span>
                                 </div>
                                 <div className="p-3 rounded-lg bg-white/30 dark:bg-[#0f1e3f]/30 border border-gray-200/30 dark:border-white/5 text-center">
                                   <span className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-white/30 block">Est. Cost</span>
-                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata.actionPlan.cost_estimate || 'N/A'}</span>
+                                  <span className="text-[12px] font-medium text-gray-800 dark:text-white mt-1 block">{msg.metadata?.actionPlan?.cost_estimate || 'N/A'}</span>
                                 </div>
                                 <div className="p-3 rounded-lg bg-white/30 dark:bg-[#0f1e3f]/30 border border-gray-200/30 dark:border-white/5 text-center">
                                   <span className="text-[10px] uppercase tracking-wider text-gray-400 dark:text-white/30 block">Lawyer</span>
-                                  <span className={`text-[12px] font-medium mt-1 block ${msg.metadata.actionPlan.lawyer_recommended ? 'text-red-500' : 'text-green-500'}`}>
-                                    {msg.metadata.actionPlan.lawyer_recommended ? 'Recommended' : 'Not Required'}
+                                  <span className={`text-[12px] font-medium mt-1 block ${msg.metadata?.actionPlan?.lawyer_recommended ? 'text-red-500' : 'text-green-500'}`}>
+                                    {msg.metadata?.actionPlan?.lawyer_recommended ? 'Recommended' : 'Not Required'}
                                   </span>
+                                  {msg.metadata?.actionPlan?.lawyer_recommended && (
+                                    <NextLink 
+                                      href={`/citizen/market_place?type=${msg.metadata?.incidentType || 'other'}`}
+                                      className="mt-2 text-[10px] font-semibold text-[#997953] dark:text-[#cdaa80] border border-[#997953]/30 dark:border-[#cdaa80]/30 px-2 py-1 rounded-md hover:bg-[#997953]/10 dark:hover:bg-[#cdaa80]/10 transition-colors inline-block"
+                                    >
+                                      View {msg.metadata?.incidentType?.replace('_', ' ') || ''} Lawyers
+                                    </NextLink>
+                                  )}
                                 </div>
                               </div>
 
                               {/* Evidence Checklist */}
-                              {msg.metadata.actionPlan.evidence_checklist?.length > 0 && (
+                              {msg.metadata?.actionPlan?.evidence_checklist?.length > 0 && (
                                 <div className="mt-4">
                                   <span className="text-[11px] uppercase tracking-wider font-semibold text-gray-500 dark:text-white/40 mb-2 block">📎 Evidence Checklist</span>
                                   <ul className="space-y-1">
-                                    {msg.metadata.actionPlan.evidence_checklist.map((item: string, i: number) => (
+                                    {msg.metadata?.actionPlan?.evidence_checklist.map((item: string, i: number) => (
                                       <li key={i} className="text-[13px] text-gray-600 dark:text-white/60 flex items-center gap-2">
                                         <span className="w-1.5 h-1.5 rounded-full bg-[#cdaa80] shrink-0"></span>
                                         {item}
@@ -374,10 +467,30 @@ export default function CitizenHome() {
                                         <span>📄 {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
                                         <div className="flex items-center gap-2">
                                           {doc.pdf_url && (
-                                            <a href={`http://localhost:8000/download/${doc.pdf_url.split(/[\\/]/).pop()}`} download className="text-[10px] px-2 py-1 rounded bg-[#997953]/10 dark:bg-[#cdaa80]/10 text-[#997953] dark:text-[#cdaa80] font-bold uppercase hover:bg-[#997953]/20 dark:hover:bg-[#cdaa80]/20 transition-colors" onClick={(e) => e.stopPropagation()}>PDF ↓</a>
+                                            <a 
+                                              href={`http://localhost:8001/download/${doc.pdf_url.split(/[\\/]/).pop()}`} 
+                                              download 
+                                              className="text-[10px] px-2 py-1 rounded bg-[#997953]/10 dark:bg-[#cdaa80]/10 text-[#997953] dark:text-[#cdaa80] font-bold uppercase hover:bg-[#997953]/20 dark:hover:bg-[#cdaa80]/20 transition-colors" 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDownloadSync();
+                                              }}
+                                            >
+                                              PDF ↓
+                                            </a>
                                           )}
                                           {doc.docx_url && (
-                                            <a href={`http://localhost:8000/download/${doc.docx_url.split(/[\\/]/).pop()}`} download className="text-[10px] px-2 py-1 rounded bg-[#997953]/10 dark:bg-[#cdaa80]/10 text-[#997953] dark:text-[#cdaa80] font-bold uppercase hover:bg-[#997953]/20 dark:hover:bg-[#cdaa80]/20 transition-colors" onClick={(e) => e.stopPropagation()}>DOCX ↓</a>
+                                            <a 
+                                              href={`http://localhost:8001/download/${doc.docx_url.split(/[\\/]/).pop()}`} 
+                                              download 
+                                              className="text-[10px] px-2 py-1 rounded bg-[#997953]/10 dark:bg-[#cdaa80]/10 text-[#997953] dark:text-[#cdaa80] font-bold uppercase hover:bg-[#997953]/20 dark:hover:bg-[#cdaa80]/20 transition-colors" 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDownloadSync();
+                                              }}
+                                            >
+                                              DOCX ↓
+                                            </a>
                                           )}
                                         </div>
                                       </summary>

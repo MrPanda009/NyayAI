@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import gsap from 'gsap';
 import { Sidebar } from '../../../../components/sidebar';
 import { supabase } from '@/lib/supabase/client';
@@ -75,7 +76,8 @@ function parsePrice(priceStr: string): number {
   return 0
 }
 
-export default function LawyerMarketplace() {
+function MarketplaceContent() {
+  const searchParams = useSearchParams()
   const [allLawyers, setAllLawyers]   = useState<LawyerProfile[]>([])
   const [isLoading, setIsLoading]     = useState(true)
   const [dbError, setDbError]         = useState<string | null>(null)
@@ -95,6 +97,15 @@ export default function LawyerMarketplace() {
   // ── Law Type dropdown ──────────────────────────────────
   const [isLawTypeOpen, setIsLawTypeOpen]       = useState(false)
   const [selectedLawType, setSelectedLawType]   = useState('Law Type')
+
+  // Handle URL pre-filtering
+  useEffect(() => {
+    const typeParam = searchParams.get('type')
+    if (typeParam && DOMAIN_LABELS[typeParam]) {
+      setSelectedLawType(typeParam)
+    }
+  }, [searchParams])
+
   const dropdownRef                             = useRef<HTMLDivElement>(null)
   const dropdownContentRef                      = useRef<HTMLDivElement>(null)
 
@@ -621,5 +632,12 @@ export default function LawyerMarketplace() {
         `}} />
       </div>
     </div>
+  )
+}
+export default function LawyerMarketplace() {
+  return (
+    <Suspense fallback={<div className="p-20 text-center">Loading Marketplace...</div>}>
+      <MarketplaceContent />
+    </Suspense>
   )
 }
