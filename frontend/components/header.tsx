@@ -245,11 +245,11 @@ export default function Header({
           <div className="hidden md:block scale-75 origin-left">
             <ThemeToggle />
           </div>
-          <Link href="/" className="inline-block group flex items-center gap-2">
+          <Link href="/" className="group flex items-center gap-2 whitespace-nowrap">
             {theme === "dark" ? (
               <span
                 aria-hidden="true"
-                className="block group-hover:opacity-70 transition-opacity"
+                className="block group-hover:opacity-70 transition-opacity flex-shrink-0"
                 style={{
                   width: 40,
                   height: 40,
@@ -270,7 +270,7 @@ export default function Header({
                 alt="NyayaAI Logo"
                 width={40}
                 height={40}
-                className="group-hover:opacity-70 transition-opacity"
+                className="group-hover:opacity-70 transition-opacity flex-shrink-0"
               />
             )}
             <span className="font-serif text-3xl font-medium tracking-tight group-hover:opacity-70 transition-opacity">
