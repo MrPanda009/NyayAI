@@ -7,6 +7,7 @@ import { useGSAP } from '@gsap/react';
 import { Database } from '../../../../types/supabase';
 import { BadgeCheck, ArrowLeft, FileText, Scale, Phone, Mail } from 'lucide-react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase/client';
 import { getActiveCaseForUser, setActiveCaseForUser } from '@/lib/db/sessions';
 import { createBriefDispatch } from '@/lib/db/dispatches';
@@ -22,6 +23,7 @@ if (typeof window !== 'undefined') {
 // We get the params promise from Next.js dynamic routing
 export default function LawyerProfilePage({ params }: { params: Promise<{ id: string }> }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
   
   // Unwrap the params properly for React 19 / Next.js 15
   const resolvedParams = React.use(params);
@@ -34,10 +36,15 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
   const [requestMsg, setRequestMsg] = useState<string | null>(null)
   const [requestOpen, setRequestOpen] = useState(false)
   const [myCases, setMyCases] = useState<Database['public']['Tables']['cases']['Row'][]>([])
+  const [filteredCases, setFilteredCases] = useState<Database['public']['Tables']['cases']['Row'][]>([])
   const [casePickLoading, setCasePickLoading] = useState(false)
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null)
   const [introMessage, setIntroMessage] = useState('')
   const [introDirty, setIntroDirty] = useState(false)
+
+  const requestedDomain = (searchParams.get('domain') || searchParams.get('type') || '').trim();
+
+  const normalizeDomain = (value: string | null | undefined) => (value ?? '').trim().toLowerCase();
 
   const buildIntroDraft = (c: Database['public']['Tables']['cases']['Row'] | null) => {
     const titlePart = c?.title ? `: "${c.title}"` : ''
@@ -165,11 +172,37 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
       const list = (data ?? []).filter((c) => !!c.id)
       setMyCases(list)
       if (list.length === 0) {
+        setFilteredCases([])
         setRequestMsg('Please start a case in the chatbot first so we can attach this request.')
         return
       }
 
-      const chosen = list.find((c) => c.id === activeCaseId) ?? list[0]
+      const lawyerDomains = new Set((lawyer?.specialisations ?? []).map((entry) => normalizeDomain(entry)))
+      const browserDomain = normalizeDomain(requestedDomain)
+
+      let scoped = list.filter((c) => {
+        const caseDomain = normalizeDomain(String(c.domain ?? ''))
+        if (!caseDomain) return false
+        if (lawyerDomains.size > 0 && !lawyerDomains.has(caseDomain)) return false
+        if (browserDomain && caseDomain !== browserDomain) return false
+        return true
+      })
+
+      setFilteredCases(scoped)
+
+      if (scoped.length === 0) {
+        const lawyerDomainText = (lawyer?.specialisations ?? []).map((d) => d.replace(/_/g, ' ')).join(', ')
+        setRequestMsg(
+          browserDomain
+            ? `No matching cases found for the selected domain (${browserDomain.replace(/_/g, ' ')}). Please create a case in this domain before requesting this lawyer.`
+            : lawyerDomainText
+              ? `No matching cases found for this lawyer's domains (${lawyerDomainText}). Please create or select a case in one of these domains.`
+              : 'No matching cases found for this lawyer. Please create a relevant case in chatbot first.'
+        )
+        return
+      }
+
+      const chosen = scoped.find((c) => c.id === activeCaseId) ?? scoped[0]
       setSelectedCaseId(chosen.id)
       setIntroMessage(buildIntroDraft(chosen))
       setRequestOpen(true)
@@ -386,15 +419,25 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
 
                           <div className="mt-4 space-y-4">
                             <div className="rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 p-3">
-                              <div className="text-[11px] uppercase tracking-wide font-bold text-[#997953] dark:text-[#cdaa80]">
-                                Select case
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-[11px] uppercase tracking-wide font-bold text-[#997953] dark:text-[#cdaa80]">
+                                  Select case
+                                </div>
+                                <div className="text-[11px] font-sans text-[#6b5a49] dark:text-white/60">
+                                  {filteredCases.length} matching {filteredCases.length === 1 ? 'case' : 'cases'}
+                                </div>
                               </div>
+                              {requestedDomain && (
+                                <div className="mt-2 inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-sans bg-[#f4eadc] dark:bg-[#213a56] text-[#5e4c3a] dark:text-[#d8c09c] border border-[#e5d4bc] dark:border-[#cdaa80]/30">
+                                  Browsing domain: {requestedDomain.replace(/_/g, ' ')}
+                                </div>
+                              )}
                               <div className="mt-2">
                                 <Select.Root
                                   value={selectedCaseId ?? ''}
                                   onValueChange={(v) => {
                                     setSelectedCaseId(v)
-                                    const chosen = myCases.find((c) => c.id === v) ?? null
+                                    const chosen = filteredCases.find((c) => c.id === v) ?? null
                                     if (!introDirty) setIntroMessage(buildIntroDraft(chosen))
                                   }}
                                 >
@@ -409,14 +452,14 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
                                   <Select.Portal>
                                     <Select.Content className="z-[10000] overflow-hidden rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 bg-white dark:bg-[#0a152e] shadow-2xl">
                                       <Select.Viewport className="p-1 max-h-[280px] overflow-y-auto">
-                                        {myCases.map((c) => (
+                                        {filteredCases.map((c) => (
                                           <Select.Item
                                             key={c.id}
                                             value={c.id}
                                             className="px-3 py-2 rounded-lg text-sm font-sans text-[#0f1e3f] dark:text-white/85 cursor-pointer outline-none data-[highlighted]:bg-[#0f1e3f]/5 dark:data-[highlighted]:bg-[#213a56]"
                                           >
                                             <Select.ItemText>
-                                              {(c.title ?? 'Untitled case').slice(0, 60)}{c.created_at ? ` • ${new Date(c.created_at).toLocaleDateString('en-IN')}` : ''}
+                                              {(c.title ?? 'Untitled case').slice(0, 60)} • {(c.domain ?? 'other').replace(/_/g, ' ')}{c.created_at ? ` • ${new Date(c.created_at).toLocaleDateString('en-IN')}` : ''}
                                             </Select.ItemText>
                                           </Select.Item>
                                         ))}
@@ -425,6 +468,25 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
                                   </Select.Portal>
                                 </Select.Root>
                               </div>
+                              {selectedCaseId && (
+                                <div className="mt-3 rounded-lg border border-[#eadbc8] dark:border-[#cdaa80]/20 bg-[#fffaf3] dark:bg-[#10264a] px-3 py-2">
+                                  {(() => {
+                                    const selectedCase = filteredCases.find((c) => c.id === selectedCaseId)
+                                    if (!selectedCase) return null
+                                    return (
+                                      <>
+                                        <div className="text-[12px] font-semibold text-[#3f3124] dark:text-white/90">
+                                          {selectedCase.title ?? 'Untitled case'}
+                                        </div>
+                                        <div className="mt-1 text-[11px] font-sans text-[#6b5a49] dark:text-white/70">
+                                          Domain: {(selectedCase.domain ?? 'other').replace(/_/g, ' ')}
+                                          {selectedCase.created_at ? ` • Created: ${new Date(selectedCase.created_at).toLocaleDateString('en-IN')}` : ''}
+                                        </div>
+                                      </>
+                                    )
+                                  })()}
+                                </div>
+                              )}
                             </div>
 
                             <div className="rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 p-3">
@@ -435,7 +497,7 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const chosen = selectedCaseId ? (myCases.find((c) => c.id === selectedCaseId) ?? null) : null
+                                    const chosen = selectedCaseId ? (filteredCases.find((c) => c.id === selectedCaseId) ?? null) : null
                                     setIntroMessage(buildIntroDraft(chosen))
                                     setIntroDirty(false)
                                   }}
