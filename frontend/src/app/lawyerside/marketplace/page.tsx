@@ -9,7 +9,6 @@ import { LiquidSlider } from '../../../../components/LiquidSlider';
 import { supabase } from '@/lib/supabase/client';
 import type { Database } from '@/types/supabase';
 import { Menu, Home, Compass, Store, Gavel } from 'lucide-react';
-import { useRouter } from 'next/navigation';
 import { acceptAvailableCase, acceptOffer } from '@/lib/db/pipeline';
 import * as Dialog from '@radix-ui/react-dialog';
 
