@@ -1,9 +1,23 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase/client';
+import { Json, Database } from '@/types/supabase';
+import { Sidebar } from '../../../../components/sidebar';
+import { useGSAP } from '@gsap/react';
+import gsap from 'gsap';
 
 export default function RedirectToHome() {
   const router = useRouter();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const searchBarRef = useRef<HTMLDivElement>(null);
+  const domainsHeaderRef = useRef<HTMLHeadingElement>(null);
+  const featuredHeaderRef = useRef<HTMLHeadingElement>(null);
+  const featuredCardRef = useRef<HTMLDivElement>(null);
+  const [featuredCase, setFeaturedCase] = useState<Database['public']['Tables']['cases']['Row'] | null>(null);
+  const [loadingFeatured, setLoadingFeatured] = useState(true);
+  const [activeLang, setActiveLang] = useState('ENGLISH');
 
   useEffect(() => {
     const fetchFeaturedTopic = async () => {
@@ -107,6 +121,10 @@ export default function RedirectToHome() {
     }
   ];
 
+  const handleProfileClick = () => {
+    router.push('/lawyerside/profile');
+  };
+
   useGSAP(() => {
     const tl = gsap.timeline();
 
@@ -146,7 +164,7 @@ export default function RedirectToHome() {
     <div className="flex bg-gray-50 dark:bg-[#0f1e3f] font-sans h-screen overflow-hidden text-gray-900 dark:text-white transition-colors duration-300" ref={containerRef}>
       {/* Sidebar Navigation */}
       <div className="shrink-0 h-screen z-50 md:sticky md:top-0 shadow-[4px_0_24px_rgba(0,0,0,0.05)] dark:shadow-none bg-white dark:bg-[#0a152e]">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+        <Sidebar showProfileButton={true} onProfileClick={handleProfileClick} />
       </div>
 
       {/* Main Content Area */}
@@ -193,7 +211,7 @@ export default function RedirectToHome() {
             BROWSE BY LEGAL DOMAINS
           </h2>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5" ref={cardsRef}>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
             {domains.map((domain) => (
               <div 
                 key={domain.title} 
