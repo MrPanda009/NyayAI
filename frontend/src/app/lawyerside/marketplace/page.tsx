@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
 import { Sidebar } from '../../../../components/sidebar';
 import type { NavItem } from '../../../../components/sidebar';
@@ -120,6 +121,8 @@ function parseBudget(str: string): number {
 }
 
 export default function LawyerCaseMarketplace() {
+  const router = useRouter();
+  
   const [lawyerProfile, setLawyerProfile] = useState<LawyerProfile | null>(null)
   const [allCases, setAllCases]             = useState<CaseRow[]>([])
   const [offeredCases, setOfferedCases]     = useState<OfferedCase[]>([])
@@ -129,6 +132,10 @@ export default function LawyerCaseMarketplace() {
   const [offeredError, setOfferedError]     = useState<string | null>(null)
   const [hoveredCard, setHoveredCard]       = useState<string | null>(null)
   const [activeTab, setActiveTab]           = useState<'left' | 'right'>('left')
+
+  const handleProfileClick = () => {
+    router.push('/lawyerside/profile');
+  };
 
   const statusPillClass = dbError
     ? 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-500/20 dark:text-red-300 dark:ring-red-500/20'
@@ -401,7 +408,7 @@ export default function LawyerCaseMarketplace() {
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-[#0f1e3f]">
       <div className="md:sticky md:top-0 md:h-screen shrink-0 z-50">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} />
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
       </div>
 
       <div className="flex-1 max-w-[1200px] mx-auto p-6 md:p-10 text-gray-900 dark:text-white font-serif">
