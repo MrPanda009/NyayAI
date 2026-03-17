@@ -60,7 +60,7 @@ const DEFAULT_NAV_ITEMS: NavItem[] = [
   { id: 'home', icon: Home, label: 'Home', href: '/citizen/home' },
   { id: 'explore', icon: Compass, label: 'Explore', href: '/citizen/explore' },
   { id: 'cases', icon: Gavel, label: 'Cases', href: '/citizen/cases' },
-  { id: 'marketplace', icon: Store, label: 'Marketplace', href: '/citizen/marketplace' },
+  { id: 'marketplace', icon: Store, label: 'Marketplace', href: '/citizen/market_place' },
 ];
 
 // ==========================================
