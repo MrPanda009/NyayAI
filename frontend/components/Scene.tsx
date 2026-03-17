@@ -30,7 +30,7 @@ export default function Scene() {
             blur={2.5}
             far={4}
           />
-          <Environment preset="city" />
+          <Environment files="/potsdamer_platz_1k.hdr" />
         </Suspense>
       </Canvas>
     </div>
