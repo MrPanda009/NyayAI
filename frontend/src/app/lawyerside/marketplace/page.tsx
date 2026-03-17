@@ -9,16 +9,34 @@ import { supabase } from '@/lib/supabase/client';
 import type { Database } from '@/types/supabase';
 import { Menu, Home, Compass, Store, Gavel } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { acceptOffer } from '@/lib/db/pipeline';
+import { acceptAvailableCase, acceptOffer } from '@/lib/db/pipeline';
 import * as Dialog from '@radix-ui/react-dialog';
 
 type CaseRow = Database['public']['Tables']['cases']['Row'];
 type LawyerProfile = Database['public']['Tables']['lawyer_profiles']['Row'];
 type PipelineRow = Database['public']['Tables']['case_pipeline']['Row'];
 
+type CasePreview = Pick<
+  CaseRow,
+  | 'id'
+  | 'title'
+  | 'domain'
+  | 'status'
+  | 'state'
+  | 'district'
+  | 'incident_description'
+  | 'incident_date'
+  | 'budget_min'
+  | 'budget_max'
+  | 'confidence_score'
+  | 'created_at'
+>
+
+type LawyerProfilePreview = Pick<LawyerProfile, 'id' | 'full_name' | 'specialisations'>
+
 interface OfferedCase {
   pipeline: PipelineRow;
-  caseData: CaseRow;
+  caseData: CasePreview;
 }
 
 function formatStage(stage: string | null): string {
@@ -129,8 +147,8 @@ function parseBudget(str: string): number {
 
 export default function LawyerCaseMarketplace() {
   const router = useRouter()
-  const [lawyerProfile, setLawyerProfile] = useState<LawyerProfile | null>(null)
-  const [allCases, setAllCases]             = useState<CaseRow[]>([])
+  const [lawyerProfile, setLawyerProfile] = useState<LawyerProfilePreview | null>(null)
+  const [allCases, setAllCases]             = useState<CasePreview[]>([])
   const [offeredCases, setOfferedCases]     = useState<OfferedCase[]>([])
   const [isLoading, setIsLoading]           = useState(true)
   const [offeredLoading, setOfferedLoading] = useState(true)
@@ -139,8 +157,9 @@ export default function LawyerCaseMarketplace() {
   const [hoveredCard, setHoveredCard]       = useState<string | null>(null)
   const [activeTab, setActiveTab]           = useState<'left' | 'right'>('left')
   const [acceptingPipelineId, setAcceptingPipelineId] = useState<string | null>(null)
+  const [acceptingCaseId, setAcceptingCaseId] = useState<string | null>(null)
   const [now, setNow] = useState<number>(0)
-  const [selectedAvailable, setSelectedAvailable] = useState<CaseRow | null>(null)
+  const [selectedAvailable, setSelectedAvailable] = useState<CasePreview | null>(null)
   const [selectedOffered, setSelectedOffered] = useState<OfferedCase | null>(null)
 
   const handleProfileClick = () => {
@@ -160,6 +179,27 @@ export default function LawyerCaseMarketplace() {
     setOfferedCases((prev) => prev.filter((o) => o.pipeline.id !== pipelineId))
     setSelectedOffered(null)
 
+    router.push('/lawyerside/my-cases')
+  }, [router])
+
+  const handleAcceptAvailable = useCallback(async (caseId: string) => {
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError || !authData.user) {
+      setDbError('Not authenticated. Please log in.')
+      return
+    }
+
+    setAcceptingCaseId(caseId)
+    const { error } = await acceptAvailableCase(caseId, authData.user.id, 'Lawyer accepted an available case.')
+    setAcceptingCaseId(null)
+    if (error) {
+      setDbError(error.message)
+      return
+    }
+
+    // Instant UI feedback: remove from Available list
+    setAllCases((prev) => prev.filter((c) => c.id !== caseId))
+    setSelectedAvailable(null)
     router.push('/lawyerside/my-cases')
   }, [router])
 
@@ -690,13 +730,23 @@ export default function LawyerCaseMarketplace() {
                               Seeking Lawyer
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); setSelectedAvailable(caseItem) }}
-                            className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[160px] ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
-                          >
-                            View case
-                          </button>
+                          <div className="flex gap-2 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setSelectedAvailable(caseItem) }}
+                              className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[160px] ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
+                            >
+                              View case
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void handleAcceptAvailable(caseItem.id) }}
+                              disabled={acceptingCaseId === caseItem.id}
+                              className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[180px] ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
+                            >
+                              {acceptingCaseId === caseItem.id ? 'Accepting…' : 'Accept offer'}
+                            </button>
+                          </div>
                         </div>
                       </div>
                       {/* Right */}
@@ -705,13 +755,23 @@ export default function LawyerCaseMarketplace() {
                           <div className="text-[17px] font-bold font-serif mb-1">{budget}</div>
                           <div className="text-[11px] text-[#0f1e3f]/50 whitespace-nowrap">Client Budget</div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setSelectedAvailable(caseItem) }}
-                          className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
-                        >
-                          View case
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setSelectedAvailable(caseItem) }}
+                            className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
+                          >
+                            View case
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleAcceptAvailable(caseItem.id) }}
+                            disabled={acceptingCaseId === caseItem.id}
+                            className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
+                          >
+                            {acceptingCaseId === caseItem.id ? 'Accepting…' : 'Accept offer'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -891,8 +951,8 @@ export default function LawyerCaseMarketplace() {
         {/* View Case Modal (Available) */}
         <Dialog.Root open={!!selectedAvailable} onOpenChange={(open) => { if (!open) setSelectedAvailable(null) }}>
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-[1px]" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-[640px] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white dark:bg-[#0a152e] border border-[#e3d4bf] dark:border-[#cdaa80]/25 shadow-2xl p-5 md:p-6">
+            <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-[1px] z-[9998]" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-[640px] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white dark:bg-[#0a152e] border border-[#e3d4bf] dark:border-[#cdaa80]/25 shadow-2xl p-5 md:p-6 z-[9999]">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Dialog.Title className="text-lg md:text-xl font-serif text-[#997953] dark:text-[#cdaa80]">
@@ -954,8 +1014,8 @@ export default function LawyerCaseMarketplace() {
         {/* View Case Modal (Offered) */}
         <Dialog.Root open={!!selectedOffered} onOpenChange={(open) => { if (!open) setSelectedOffered(null) }}>
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-[1px]" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-[680px] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white dark:bg-[#0a152e] border border-[#e3d4bf] dark:border-[#cdaa80]/25 shadow-2xl p-5 md:p-6">
+            <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-[1px] z-[9998]" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-[680px] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white dark:bg-[#0a152e] border border-[#e3d4bf] dark:border-[#cdaa80]/25 shadow-2xl p-5 md:p-6 z-[9999]">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Dialog.Title className="text-lg md:text-xl font-serif text-[#997953] dark:text-[#cdaa80]">

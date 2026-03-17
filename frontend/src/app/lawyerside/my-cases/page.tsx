@@ -16,9 +16,24 @@ type PipelineRow = Database['public']['Tables']['case_pipeline']['Row']
 type PipelineStage = Database['public']['Enums']['pipeline_stage']
 type KanbanStage = 'accepted' | 'active' | 'completed'
 
+type CasePreview = Pick<
+  CaseRow,
+  | 'id'
+  | 'title'
+  | 'domain'
+  | 'status'
+  | 'state'
+  | 'district'
+  | 'incident_description'
+  | 'incident_date'
+  | 'budget_min'
+  | 'budget_max'
+  | 'created_at'
+>
+
 interface KanbanItem {
   pipeline: PipelineRow
-  caseData: CaseRow
+  caseData: CasePreview
 }
 
 const LAWYER_NAV_ITEMS: NavItem[] = [
@@ -246,8 +261,6 @@ export default function LawyerMyCasesPage() {
           isDragging ? 'opacity-70 ring-2 ring-[#997953]/30 dark:ring-[#cdaa80]/30' : ''
         }`}
         onClick={() => setSelectedItem(item)}
-        role="button"
-        tabIndex={0}
         onKeyDown={(e) => { if (e.key === 'Enter') setSelectedItem(item) }}
         {...attributes}
         {...listeners}
@@ -267,7 +280,7 @@ export default function LawyerMyCasesPage() {
     return (
       <div
         ref={setNodeRef}
-        className={`min-h-[72px] rounded-lg p-0.5 transition-colors ${isOver ? 'bg-[#997953]/5 dark:bg-[#cdaa80]/10' : ''}`}
+        className={`flex-1 min-h-[72px] rounded-lg p-0.5 transition-colors ${isOver ? 'bg-[#997953]/5 dark:bg-[#cdaa80]/10' : ''}`}
       >
         {children}
       </div>
@@ -300,7 +313,7 @@ export default function LawyerMyCasesPage() {
                     const list: KanbanItem[] = grouped[column.stage]
                     const columnId = `column:${column.stage}`
                     return (
-                      <section key={column.stage} className="rounded-xl border border-[#d8c1a1] dark:border-[#cdaa80]/30 bg-white/90 dark:bg-[#0a152e]/70 p-4" id={columnId}>
+                      <section key={column.stage} className="rounded-xl border border-[#d8c1a1] dark:border-[#cdaa80]/30 bg-white/90 dark:bg-[#0a152e]/70 p-4 flex flex-col min-h-[70vh]" id={columnId}>
                         <div className="flex items-center justify-between mb-3">
                           <h2 className="text-lg font-serif text-[#997953] dark:text-[#cdaa80]">{column.title}</h2>
                           <span className="text-xs font-sans text-[#5b4b3d] dark:text-white/70">{list.length}</span>

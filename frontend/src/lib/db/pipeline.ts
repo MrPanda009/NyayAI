@@ -105,6 +105,45 @@ export async function acceptOffer(pipelineId: string, caseId: string) {
   return { data, error }
 }
 
+export async function acceptAvailableCase(caseId: string, lawyerId: string, note?: string) {
+  // Prevent duplicate assignment (best-effort; DB should enforce if desired)
+  const { data: existing, error: existingErr } = await supabase
+    .from('case_pipeline')
+    .select('id')
+    .eq('case_id', caseId)
+    .limit(1)
+
+  if (existingErr) return { data: null, error: existingErr }
+  if (existing && existing.length > 0) {
+    return { data: null, error: new Error('This case has already been picked up.') }
+  }
+
+  const { data, error } = await supabase
+    .from('case_pipeline')
+    .insert({
+      case_id: caseId,
+      lawyer_id: lawyerId,
+      stage: 'accepted',
+      accepted_at: new Date().toISOString(),
+      offer_note: note ?? 'Lawyer picked up this available case.',
+    })
+    .select()
+    .single()
+
+  if (error) return { data, error }
+
+  await supabase
+    .from('cases')
+    .update({
+      status: 'lawyer_matched',
+      lawyer_matched_at: new Date().toISOString(),
+      is_seeking_lawyer: false,
+    })
+    .eq('id', caseId)
+
+  return { data, error }
+}
+
 export async function getCasePipelineForCitizen(caseId: string) {
   const { data, error } = await supabase
     .from('case_pipeline')
