@@ -377,7 +377,7 @@ function MarketplaceContent() {
         <div className="flex flex-col md:flex-row justify-between items-center gap-6 mb-12 font-sans w-full relative z-40">
 
           {/* Law Type */}
-          <div className="relative z-50 shrink-0" ref={dropdownRef}>
+          <div className="relative z-60 shrink-0" ref={dropdownRef}>
             <button
               onClick={() => setIsLawTypeOpen(v => !v)}
               className={`flex items-center gap-3 bg-white dark:bg-[#0f1e3f] border border-[#d8c1a1] dark:border-[#cdaa80]/50 text-[#443831] dark:text-[#cdaa80] px-4 py-2.5 rounded-lg transition-colors focus:ring-2 focus:ring-[#997953]/20 dark:focus:ring-[#cdaa80]/30 outline-none shadow-sm w-56 ${isLawTypeOpen ? 'bg-[#f7efe5] ring-1 ring-[#997953]/30 dark:bg-[#213a56] dark:ring-[#cdaa80]/50' : 'hover:bg-[#f9f4ec] dark:hover:bg-[#213a56]'}`}
@@ -392,7 +392,7 @@ function MarketplaceContent() {
             </button>
             <div
               ref={dropdownContentRef}
-              className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-[#0f1e3f] border border-[#e3d4bf] dark:border-[#cdaa80]/30 rounded-lg shadow-[0_18px_45px_rgba(68,56,49,0.14)] dark:shadow-2xl overflow-hidden"
+              className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-[#0f1e3f] border border-[#e3d4bf] dark:border-[#cdaa80]/30 rounded-lg shadow-[0_18px_45px_rgba(68,56,49,0.14)] dark:shadow-2xl overflow-hidden z-60"
               style={{ display: 'none' }}
             >
               <div className="max-h-[240px] overflow-y-auto custom-scrollbar py-1">
@@ -445,7 +445,7 @@ function MarketplaceContent() {
           </div>
 
           {/* Experience */}
-          <div className="relative z-50 shrink-0" ref={expDropdownRef}>
+          <div className="relative z-40 shrink-0" ref={expDropdownRef}>
             <button
               onClick={() => setIsExperienceOpen(v => !v)}
               className={`flex items-center gap-3 bg-white dark:bg-[#0f1e3f] border border-[#d8c1a1] dark:border-[#cdaa80]/50 text-[#443831] dark:text-[#cdaa80] px-4 py-2.5 rounded-lg transition-colors focus:ring-2 focus:ring-[#997953]/20 dark:focus:ring-[#cdaa80]/30 outline-none shadow-sm w-64 ${isExperienceOpen ? 'bg-[#f7efe5] ring-1 ring-[#997953]/30 dark:bg-[#213a56] dark:ring-[#cdaa80]/50' : 'hover:bg-[#f9f4ec] dark:hover:bg-[#213a56]'}`}

@@ -85,14 +85,14 @@ const DEFAULT_SOCIALS: SocialLink[] = [
 // ==========================================
 
 export const Footer: React.FC<FooterProps> = ({
-  logoText = "Logoipsum",
+  logoText = "NyayaAI",
   logoIcon: LogoIcon = Aperture,
   subscribePlaceholder = "Enter your email",
   subscribeButtonText = "Subscribe",
   onSubscribe,
-  creditsText = "Crafted by Team Code_Bytes.",
+  creditsText = "Intelligent Legal Assistance for Every Indian Citizen.",
   paletteColors = DEFAULT_PALETTE,
-  copyrightText = "© 2026 Your platform. All rights reserved.",
+  copyrightText = "© 2026 NyayaAI. All rights reserved.",
   socialLinks = DEFAULT_SOCIALS,
   themeColors = {},
 }) => {
