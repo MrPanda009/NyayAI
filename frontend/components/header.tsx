@@ -59,7 +59,7 @@ const DEFAULT_NAV_ITEMS: NavItem[] = [
 
 
 export default function Header({
-  logoText = "LOURVE",
+  logoText = "NyayaAI",
   navLinks = DEFAULT_NAV_ITEMS,
   rightAction,
   rightIcon,
