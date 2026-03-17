@@ -30,39 +30,35 @@ export default function Page() {
 
           <div className="space-y-4">
             <h1 className="text-4xl md:text-5xl font-medium tracking-wide">
-              Justitia: The Allegory of Justice
+              NyayaAI: Intelligent Legal Assistance for Every Indian Citizen
             </h1>
             <p className="text-sm md:text-base text-slate-700 dark:text-[#a2a2a2] font-sans leading-relaxed max-w-md">
-              Lorem Ipsum is simply dummy text of the printing and typesetting industry.
-              Lorem Ipsum has been the industry's standard dummy text ever since the
-              1500s, when an unknown printer took a galley of type and scrambled it to
-              make a type specimen book.
+              NyayaAI is a production-grade legal assistance platform delivering instant analysis, 
+              grounded in the latest BNS, BNSS, and IPC statutes. Empowering citizens with 
+              verified legal guidance at their fingertips.
             </p>
           </div>
 
           <div className="space-y-4 relative">
-            {/* Cursor icon from mockup (just for decoration) */}
             <div className="absolute -right-8 top-0 w-6 h-6 border-l-2 border-t-2 border-slate-900 dark:border-[#d2ad82] rotate-45 transform origin-bottom-right"></div>
             <h2 className="text-3xl md:text-4xl font-medium tracking-wide">
-              Full-scale Statue
+              AI-Powered Legal Research
             </h2>
             <p className="text-sm md:text-base text-slate-700 dark:text-[#a2a2a2] font-sans leading-relaxed max-w-md">
-              Lorem Ipsum is simply dummy text of the printing and typesetting industry.
-              Lorem Ipsum has been the industry's standard dummy text ever since the
-              1500s, when an unknown printer took a galley of type and scrambled it to
-              make a type specimen book.
+              Our five-agent pipeline processes your situation to extract facts, identify applicable 
+              laws, and generate court-ready documents. All results include confidence scores and 
+              direct citations to verified statutes.
             </p>
           </div>
 
           <div className="space-y-4">
             <h2 className="text-3xl md:text-4xl font-medium tracking-wide">
-              Ancient Roman Tradition
+              Verified Lawyer Marketplace
             </h2>
             <p className="text-sm md:text-base text-slate-700 dark:text-[#a2a2a2] font-sans leading-relaxed max-w-md">
-              Lorem Ipsum is simply dummy text of the printing and typesetting industry.
-              Lorem Ipsum has been the industry's standard dummy text ever since the
-              1500s, when an unknown printer took a galley of type and scrambled it to
-              make a type specimen book.
+              Connect with matched legal professionals through our dual-sided marketplace. 
+              Citizens get AI-prepared briefs while lawyers access a purpose-built portal to 
+              manage cases and provide expert representation.
             </p>
           </div>
 
