@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import NextLink from 'next/link';
 import { Sidebar } from '../../../../components/sidebar';
 import gsap from 'gsap';
@@ -48,8 +48,6 @@ export default function CitizenHome() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [caseId, setCaseId] = useState<string | null>(null);
-<<<<<<< HEAD
-=======
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [isTranscribing, setIsTranscribing] = useState(false);
   
@@ -61,7 +59,6 @@ export default function CitizenHome() {
     stopRecording,
     resetRecording
   } = useVoiceRecorder();
->>>>>>> 5ac425bff629d3cafd5c60cf881f08cc581d3ea3
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -85,13 +82,27 @@ export default function CitizenHome() {
     }
   };
 
-  const onlyLawyerAcceptance = (rows: NotificationRow[]) =>
+  const offerLifecycleNotifications = (rows: NotificationRow[]) =>
     rows.filter((row) => {
-      if (row.type === 'offer_accepted') return true;
+      if (row.type === 'offer_received' || row.type === 'offer_accepted') return true;
       const title = (row.title ?? '').toLowerCase();
       const body = (row.body ?? '').toLowerCase();
-      return title.includes('accepted') || body.includes('accepted');
+      return title.includes('offer') || body.includes('offer') || title.includes('accepted') || body.includes('accepted');
     });
+
+  const getNotificationTitle = (item: NotificationRow) => {
+    if (item.title) return item.title;
+    if (item.type === 'offer_received') return 'New lawyer offer received';
+    if (item.type === 'offer_accepted') return 'Your offer acceptance is confirmed';
+    return 'Case update';
+  };
+
+  const getNotificationBody = (item: NotificationRow) => {
+    if (item.body) return item.body;
+    if (item.type === 'offer_received') return 'A lawyer has sent a new offer. Open your cases to review it.';
+    if (item.type === 'offer_accepted') return 'Your selected lawyer has been notified.';
+    return 'Tap to open your case updates.';
+  };
 
   const formatRelativeTime = (iso: string | null) => {
     if (!iso) return 'Just now';
@@ -106,7 +117,7 @@ export default function CitizenHome() {
     return `${diffDay}d ago`;
   };
 
-  const loadAcceptanceNotifications = async () => {
+  const loadOfferNotifications = useCallback(async () => {
     const { data: authData, error: authError } = await supabase.auth.getUser();
     if (authError || !authData.user) return;
 
@@ -115,10 +126,10 @@ export default function CitizenHome() {
     setNotificationLoading(false);
     if (error) return;
 
-    const filtered = onlyLawyerAcceptance(data ?? []);
+    const filtered = offerLifecycleNotifications(data ?? []);
     setNotifications(filtered);
     setUnreadNotificationCount(filtered.filter((row) => !row.is_read).length);
-  };
+  }, []);
   useEffect(() => {
     // Scroll to bottom whenever messages change or loading state changes
     scrollToBottom();
@@ -193,7 +204,7 @@ export default function CitizenHome() {
     }, containerRef);
     
     return () => ctx.revert();
-  }, []);
+  }, [loadOfferNotifications]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -216,12 +227,12 @@ export default function CitizenHome() {
     let channel: ReturnType<typeof subscribeToNotifications> | null = null;
 
     const init = async () => {
-      await loadAcceptanceNotifications();
+      await loadOfferNotifications();
       const { data: authData, error: authError } = await supabase.auth.getUser();
       if (authError || !authData.user) return;
 
       channel = subscribeToNotifications(authData.user.id, async () => {
-        await loadAcceptanceNotifications();
+        await loadOfferNotifications();
       });
     };
 
@@ -404,7 +415,7 @@ export default function CitizenHome() {
                 const next = !notificationOpen;
                 setNotificationOpen(next);
                 if (next) {
-                  await loadAcceptanceNotifications();
+                  await loadOfferNotifications();
                 }
               }}
               className="relative flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm"
@@ -424,7 +435,7 @@ export default function CitizenHome() {
                 <div className="px-4 py-3 border-b border-[#e8d7c1] dark:border-[#cdaa80]/20 flex items-center justify-between">
                   <div>
                     <p className="text-[12px] uppercase tracking-[1.5px] text-[#7b5f40] dark:text-[#cdaa80] font-semibold">Notifications</p>
-                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Lawyer acceptance updates</p>
+                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Offer and acceptance updates</p>
                   </div>
                   <button
                     onClick={handleMarkAllRead}
@@ -438,7 +449,7 @@ export default function CitizenHome() {
                   {notificationLoading ? (
                     <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">Loading notifications...</div>
                   ) : notifications.length === 0 ? (
-                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No lawyer acceptance notifications yet.</div>
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No offer notifications yet.</div>
                   ) : (
                     notifications.map((item) => (
                       <NextLink
@@ -454,14 +465,14 @@ export default function CitizenHome() {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
-                            {item.title || 'A lawyer accepted your request'}
+                            {getNotificationTitle(item)}
                           </p>
                           <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
                             {formatRelativeTime(item.created_at)}
                           </span>
                         </div>
                         <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
-                          {item.body || 'Tap to open your case updates.'}
+                          {getNotificationBody(item)}
                         </p>
                       </NextLink>
                     ))

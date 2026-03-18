@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase/client'
 import type { Enums } from '@/types/supabase'
+import { createNotification } from '@/lib/db/notifications'
 
 export async function createOffer(lawyerId: string, payload: {
   case_id: string
@@ -79,6 +80,23 @@ export async function withdrawOffer(pipelineId: string) {
 }
 
 export async function acceptOffer(pipelineId: string, caseId: string) {
+  const { data: existingPipeline, error: existingErr } = await supabase
+    .from('case_pipeline')
+    .select('id, case_id, lawyer_id, offer_amount')
+    .eq('id', pipelineId)
+    .maybeSingle()
+
+  if (existingErr) return { data: null, error: existingErr }
+  if (!existingPipeline) return { data: null, error: new Error('Offer not found.') }
+
+  const { data: caseRow, error: caseReadErr } = await supabase
+    .from('cases')
+    .select('id, title, citizen_id')
+    .eq('id', caseId)
+    .maybeSingle()
+
+  if (caseReadErr) return { data: null, error: caseReadErr }
+
   // Accept the offer
   const { data, error } = await supabase
     .from('case_pipeline')
@@ -92,6 +110,14 @@ export async function acceptOffer(pipelineId: string, caseId: string) {
 
   if (error) return { data, error }
 
+  // Any other pending offers for this case are auto-withdrawn once one offer is accepted.
+  await supabase
+    .from('case_pipeline')
+    .update({ stage: 'withdrawn' })
+    .eq('case_id', caseId)
+    .eq('stage', 'offered')
+    .neq('id', pipelineId)
+
   // Update case status
   await supabase
     .from('cases')
@@ -101,6 +127,23 @@ export async function acceptOffer(pipelineId: string, caseId: string) {
       is_seeking_lawyer: false,
     })
     .eq('id', caseId)
+
+  if (existingPipeline.lawyer_id && caseRow) {
+    const amount = existingPipeline.offer_amount
+      ? ` (Offer: INR ${existingPipeline.offer_amount.toLocaleString('en-IN')})`
+      : ''
+
+    await createNotification({
+      user_id: existingPipeline.lawyer_id,
+      type: 'offer_accepted',
+      title: 'Your offer was accepted',
+      body: `${caseRow.title ?? 'A case'} has accepted your offer${amount}.`,
+      data: {
+        case_id: caseRow.id,
+        pipeline_id: pipelineId,
+      },
+    })
+  }
 
   return { data, error }
 }

@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabase/client';
 import type { Database } from '@/types/supabase';
 import { Menu, Home, Compass, Store, Gavel } from 'lucide-react';
 import { acceptAvailableCase } from '@/lib/db/pipeline';
+import { createNotification } from '@/lib/db/notifications';
 import * as Dialog from '@radix-ui/react-dialog';
 import { PriceWheel } from '../../../../components/PriceWheel';
 
@@ -227,7 +228,7 @@ export default function LawyerCaseMarketplace() {
       setHiddenAvailableCaseIds(new Set())
       setHiddenIncomingDispatchIds(new Set())
     }
-  }, [])
+  }, [lawyerProfile?.full_name])
 
   const persistHiddenAvailable = useCallback((lawyerId: string, next: Set<string>) => {
     localStorage.setItem(getHiddenAvailableKey(lawyerId), JSON.stringify(Array.from(next)))
@@ -337,21 +338,24 @@ export default function LawyerCaseMarketplace() {
 
     const offerPayload = {
       offer_amount: offerAmount,
-      offer_message: offerMessage.trim(),
-      offer_note: incoming.dispatch.intro_message,
+      offer_note: `Lawyer note: ${incoming.dispatch.intro_message}\n\nOffer details: ${offerMessage.trim()}`,
       offer_sent_at: new Date().toISOString(),
     }
 
     let offerErr: { message: string } | null = null
+    let pipelineIdForNotification: string | null = null
 
     if (existing?.stage === 'offered') {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('case_pipeline')
         .update(offerPayload)
         .eq('id', existing.id)
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? existing.id
       offerErr = error
     } else {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('case_pipeline')
         .insert({
           case_id: incoming.caseData.id,
@@ -359,6 +363,9 @@ export default function LawyerCaseMarketplace() {
           stage: 'offered',
           ...offerPayload,
         })
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? null
       offerErr = error
     }
 
@@ -372,6 +379,18 @@ export default function LawyerCaseMarketplace() {
       .from('brief_dispatches')
       .update({ status: 'offered' })
       .eq('id', incoming.dispatch.id)
+
+    await createNotification({
+      user_id: incoming.dispatch.citizen_id,
+      type: 'offer_received',
+      title: 'New lawyer offer received',
+      body: `${lawyerProfile?.full_name ?? 'A lawyer'} sent an offer for ${incoming.caseData.title ?? 'your case'}.`,
+      data: {
+        case_id: incoming.caseData.id,
+        pipeline_id: pipelineIdForNotification,
+        lawyer_id: authData.user.id,
+      },
+    })
 
     setIncomingDispatches((prev) =>
       prev.map((d) =>
@@ -1130,7 +1149,12 @@ export default function LawyerCaseMarketplace() {
                           <div className="flex gap-2 flex-wrap">
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); setSelectedDispatch({ dispatch, caseData }) }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
+                                if (entry) setSelectedDispatch(entry);
+                                else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
+                              }}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[160px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
                             >
                               View case
@@ -1141,7 +1165,9 @@ export default function LawyerCaseMarketplace() {
                                 e.stopPropagation()
                                 setOfferAmountInput('25000')
                                 setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
-                                setSelectedDispatch({ dispatch, caseData })
+                                const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
+                                if (entry) setSelectedDispatch(entry);
+                                else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
                               }}
                               disabled={isOfferSent}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[180px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}

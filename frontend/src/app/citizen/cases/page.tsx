@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState, } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { Sidebar } from '../../../../components/sidebar';
@@ -17,6 +17,7 @@ import { AnalysisModal } from '../../../components/AnalysisModal';
 
 type CaseRow = Database['public']['Tables']['cases']['Row'];
 type NotificationRow = Database['public']['Tables']['notifications']['Row'];
+type CasePipelineRow = Database['public']['Tables']['case_pipeline']['Row'];
 
 function formatUiStatus(caseRow: CaseRow): string {
   if (caseRow.status === 'completed') return 'Case Completed'
@@ -87,7 +88,7 @@ export default function CaseHistory() {
   const [selectedCase, setSelectedCase] = useState<CaseRow | null>(null)
   const [offersLoading, setOffersLoading] = useState(false)
   const [offersError, setOffersError] = useState<string | null>(null)
-  const [offers, setOffers] = useState<Database['public']['Tables']['case_pipeline']['Row'][]>([])
+  const [offers, setOffers] = useState<CasePipelineRow[]>([])
   const [acceptingOfferId, setAcceptingOfferId] = useState<string | null>(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [caseAnalysis, setCaseAnalysis] = useState<any>(null)
@@ -99,13 +100,27 @@ export default function CaseHistory() {
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
   const notificationRef = useRef<HTMLDivElement | null>(null)
 
-  const onlyLawyerAcceptance = (rows: NotificationRow[]) =>
+  const offerLifecycleNotifications = (rows: NotificationRow[]) =>
     rows.filter((row) => {
-      if (row.type === 'offer_accepted') return true
+      if (row.type === 'offer_received' || row.type === 'offer_accepted') return true
       const title = (row.title ?? '').toLowerCase()
       const body = (row.body ?? '').toLowerCase()
-      return title.includes('accepted') || body.includes('accepted')
+      return title.includes('offer') || body.includes('offer') || title.includes('accepted') || body.includes('accepted')
     })
+
+  const getNotificationTitle = (item: NotificationRow) => {
+    if (item.title) return item.title
+    if (item.type === 'offer_received') return 'New lawyer offer received'
+    if (item.type === 'offer_accepted') return 'Your offer acceptance is confirmed'
+    return 'Case update'
+  }
+
+  const getNotificationBody = (item: NotificationRow) => {
+    if (item.body) return item.body
+    if (item.type === 'offer_received') return 'A lawyer has sent a new offer. Open to review and accept.'
+    if (item.type === 'offer_accepted') return 'Your selected lawyer has been notified. You can continue from case details.'
+    return 'Tap to open your case updates.'
+  }
 
   const formatRelativeTime = (iso: string | null) => {
     if (!iso) return 'Just now'
@@ -195,7 +210,7 @@ export default function CaseHistory() {
     };
   }, [])
 
-  const loadAcceptanceNotifications = async () => {
+  const loadOfferNotifications = useCallback(async () => {
     const { data: authData, error: authError } = await supabase.auth.getUser()
     if (authError || !authData.user) return
 
@@ -204,20 +219,20 @@ export default function CaseHistory() {
     setNotificationLoading(false)
     if (error) return
 
-    const filtered = onlyLawyerAcceptance(data ?? [])
+    const filtered = offerLifecycleNotifications(data ?? [])
     setNotifications(filtered)
     setUnreadNotificationCount(filtered.filter((row) => !row.is_read).length)
-  }
+  }, [])
 
   useEffect(() => {
     let channel: ReturnType<typeof subscribeToNotifications> | null = null
 
     const init = async () => {
-      await loadAcceptanceNotifications()
+      await loadOfferNotifications()
       const { data: authData, error: authError } = await supabase.auth.getUser()
       if (authError || !authData.user) return
       channel = subscribeToNotifications(authData.user.id, async () => {
-        await loadAcceptanceNotifications()
+        await loadOfferNotifications()
       })
     }
 
@@ -228,7 +243,33 @@ export default function CaseHistory() {
         channel.unsubscribe()
       }
     }
-  }, [])
+  }, [loadOfferNotifications])
+
+  useEffect(() => {
+    if (!selectedCase) return
+
+    const channel = supabase
+      .channel(`citizen-case-offers:${selectedCase.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'case_pipeline',
+        filter: `case_id=eq.${selectedCase.id}`,
+      }, async () => {
+        const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(selectedCase.id)
+        if (pipelineErr) {
+          setOffersError(pipelineErr.message)
+          return
+        }
+        const rows = (pipelineRows ?? []) as CasePipelineRow[]
+        setOffers(rows.filter((r) => r.stage === 'offered'))
+      })
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [selectedCase])
 
   const openCaseDetails = async (caseId: string) => {
     const caseRow = dbCases.find((c) => c.id === caseId) ?? null
@@ -515,7 +556,7 @@ export default function CaseHistory() {
                 const next = !notificationOpen
                 setNotificationOpen(next)
                 if (next) {
-                  await loadAcceptanceNotifications()
+                  await loadOfferNotifications()
                 }
               }}
               className="relative flex items-center justify-center w-10 h-10 rounded-full border border-[#d8c1a1] dark:border-white/10 bg-white dark:bg-[#12284f]/80 text-[#443831] dark:text-[#cdaa80] hover:bg-[#f9f2e8] dark:hover:bg-[#213a56] transition-all duration-300"
@@ -535,7 +576,7 @@ export default function CaseHistory() {
                 <div className="px-4 py-3 border-b border-[#e8d7c1] dark:border-[#cdaa80]/20 flex items-center justify-between">
                   <div>
                     <p className="text-[12px] uppercase tracking-[1.5px] text-[#7b5f40] dark:text-[#cdaa80] font-semibold">Notifications</p>
-                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Lawyer acceptance updates</p>
+                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Offer and acceptance updates</p>
                   </div>
                   <button
                     onClick={handleMarkAllRead}
@@ -549,7 +590,7 @@ export default function CaseHistory() {
                   {notificationLoading ? (
                     <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">Loading notifications...</div>
                   ) : notifications.length === 0 ? (
-                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No lawyer acceptance notifications yet.</div>
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No offer notifications yet.</div>
                   ) : (
                     notifications.map((item) => (
                       <button
@@ -561,14 +602,14 @@ export default function CaseHistory() {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
-                            {item.title || 'A lawyer accepted your request'}
+                            {getNotificationTitle(item)}
                           </p>
                           <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
                             {formatRelativeTime(item.created_at)}
                           </span>
                         </div>
                         <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
-                          {item.body || 'Tap to open your case updates.'}
+                          {getNotificationBody(item)}
                         </p>
                       </button>
                     ))
@@ -798,6 +839,62 @@ export default function CaseHistory() {
                       AI analysis not yet available for this case. Check back soon!
                     </div>
                   )}
+
+                  <div className="mt-4 rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 p-4 bg-[#fdf9f3] dark:bg-[#12284f]/50">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h3 className="text-base font-serif text-[#997953] dark:text-[#cdaa80]">Lawyer Offers</h3>
+                      {selectedCase.status === 'lawyer_matched' && (
+                        <span className="text-[11px] uppercase tracking-wide font-semibold text-emerald-700 dark:text-emerald-300">Accepted</span>
+                      )}
+                    </div>
+
+                    {offersLoading ? (
+                      <p className="text-sm text-[#5b4b3d] dark:text-white/70">Loading offers...</p>
+                    ) : offersError ? (
+                      <p className="text-sm text-red-600 dark:text-red-300">{offersError}</p>
+                    ) : offers.length === 0 ? (
+                      <p className="text-sm text-[#5b4b3d] dark:text-white/70">No active offers for this case yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {offers.map((offer) => {
+                          const joinedLawyer = (offer as CasePipelineRow & { lawyer_profiles?: { full_name?: string | null; experience_years?: number | null } }).lawyer_profiles
+                          return (
+                            <div key={offer.id} className="rounded-lg border border-[#d8c1a1] dark:border-[#cdaa80]/20 p-3 bg-white dark:bg-[#0f1e3f]/60">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-[#2f261f] dark:text-white/90">
+                                    {joinedLawyer?.full_name ?? 'Verified lawyer'}
+                                  </p>
+                                  <p className="text-[12px] text-[#5b4b3d] dark:text-white/70">
+                                    {offer.offer_amount
+                                      ? `Offer: INR ${offer.offer_amount.toLocaleString('en-IN')}`
+                                      : 'Offer amount not specified'}
+                                  </p>
+                                  {joinedLawyer?.experience_years ? (
+                                    <p className="text-[12px] text-[#5b4b3d] dark:text-white/60">
+                                      Experience: {joinedLawyer.experience_years} years
+                                    </p>
+                                  ) : null}
+                                </div>
+                                <button
+                                  onClick={() => { void handleAcceptOffer(offer.id) }}
+                                  disabled={!!acceptingOfferId || selectedCase.status === 'lawyer_matched' || selectedCase.status === 'completed'}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#0f1e3f]/30 bg-[#0f1e3f] text-[#cdaa80] hover:bg-[#0f1e3f]/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
+                                  {acceptingOfferId === offer.id ? 'Accepting...' : 'Accept Offer'}
+                                </button>
+                              </div>
+                              {offer.offer_note && (
+                                <p className="mt-2 text-[12px] text-[#5b4b3d] dark:text-white/70 leading-relaxed whitespace-pre-wrap">
+                                  {offer.offer_note}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </Dialog.Content>
