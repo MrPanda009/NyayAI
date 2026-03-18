@@ -48,8 +48,6 @@ export default function CitizenHome() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [caseId, setCaseId] = useState<string | null>(null);
-<<<<<<< HEAD
-=======
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [isTranscribing, setIsTranscribing] = useState(false);
   
@@ -61,7 +59,6 @@ export default function CitizenHome() {
     stopRecording,
     resetRecording
   } = useVoiceRecorder();
->>>>>>> 5ac425bff629d3cafd5c60cf881f08cc581d3ea3
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
