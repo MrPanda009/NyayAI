@@ -1,6 +1,5 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
-import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -39,7 +38,6 @@ export default function LawyerHome() {
 
   const [input, setInput] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [activeLang, setActiveLang] = useState('ENGLISH');
 
   const {
     isRecording,
@@ -95,8 +93,6 @@ export default function LawyerHome() {
   const handleProfileClick = () => {
     router.push('/lawyerside/profile');
   };
-
-  const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
 
   const domains = [
     {
@@ -291,7 +287,7 @@ export default function LawyerHome() {
     return () => {
       cancelled = true;
     };
-  }, [BACKEND_URL, selectedDomain]);
+  }, [selectedDomain]);
 
   useEffect(() => {
     let cancelled = false;
@@ -334,7 +330,7 @@ export default function LawyerHome() {
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [BACKEND_URL]);
+  }, []);
 
   useGSAP(() => {
     const tl = gsap.timeline();
@@ -400,7 +396,7 @@ export default function LawyerHome() {
           </h1>
 
           {/* Main Content Grid Area (Flex-1 to consume exactly the remaining viewport height) */}
-          <div className="w-full flex flex-col lg:flex-row gap-8 items-stretch flex-1 min-h-0">
+          <div className="w-full flex-1 flex flex-col lg:flex-row gap-8 items-stretch min-h-0">
             
             {/* Left Column: Legal Domains (Expanding naturally to fill parent) */}
             <div className="flex-1 w-full flex flex-col min-h-0">
@@ -408,7 +404,7 @@ export default function LawyerHome() {
                 BROWSE BY LEGAL DOMAINS
               </h2>
               
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 md:gap-3 flex-1 min-h-0 h-full" ref={cardsRef}>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 md:gap-3 flex-1 min-h-0" ref={cardsRef}>
                 {domains.map((domain) => (
                   <div 
                     key={domain.title} 
@@ -424,7 +420,7 @@ export default function LawyerHome() {
                     className="domain-card bg-white dark:bg-[#cdaa80] text-[#0f1e3f] rounded-xl p-2 flex flex-col items-center justify-center text-center gap-1.5 cursor-pointer border border-[#e3d4bf] dark:border-transparent hover:bg-[#f9f4ec] dark:hover:bg-[#d9b88f] hover:-translate-y-1 hover:shadow-md transition-all duration-300 h-full w-full group min-h-0"
                   >
                     <div className="shrink-0 transition-transform duration-300 group-hover:scale-110 mb-0.5">
-                      <div className="[&>svg]:w-[28px] [&>svg]:h-[28px] md:[&>svg]:w-[32px] md:[&>svg]:h-[32px] [&>div>svg]:w-[28px] [&>div>svg]:h-[28px] md:[&>div>svg]:w-[32px] md:[&>div>svg]:h-[32px]">
+                      <div className="[&>svg]:w-[28px] [&>svg]:h-[28px] md:[&>svg]:w-[32px] md:[&>svg]:h-[32px]">
                         {domain.icon}
                       </div>
                     </div>
@@ -438,66 +434,10 @@ export default function LawyerHome() {
                 ))}
               </div>
             </div>
-          </div>
-        </div>
-
-        {/* Fixed Input Area at Bottom */}
-        <div ref={inputBarRef} className="absolute bottom-0 left-0 right-0 p-6 md:p-10 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-[#0f1e3f] dark:via-[#0f1e3f] dark:to-transparent z-20">
-          <div className="max-w-4xl mx-auto md:px-6">
-            <div className="flex items-center gap-4 w-full group relative">
-              
-              {/* Plus Button */}
-              <button 
-                type="button"
-                className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full border border-gray-300 dark:border-white/10 dark:bg-transparent bg-white text-gray-500 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/5 active:bg-gray-200 hover:scale-105 active:scale-95 transition-all duration-300 shrink-0 cursor-pointer shadow-sm z-10 outline-none focus:ring-2 focus:ring-[#997953]/50 dark:focus:ring-white/20"
-                aria-label="Add attachment"
-              >
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-              
-              {/* Input Field */}
-              <div className="flex-1 relative cursor-text transition-transform duration-300">
-                <input 
-                  type="text" 
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  disabled={isTranscribing}
-                  placeholder={isTranscribing ? "Processing voice input..." : "Describe your legal query..."}
-                  className="w-full bg-white dark:bg-transparent border border-gray-300 dark:border-[#cdaa80]/30 rounded-full pl-6 pr-16 py-4 md:py-[18px] text-[15px] outline-none text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-white/40 focus:border-[#997953] dark:focus:border-[#cdaa80] focus:ring-1 focus:ring-[#997953] dark:focus:ring-[#cdaa80] transition-all duration-300 shadow-[0_4px_20px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] hover:border-gray-400 dark:hover:border-[#cdaa80]/60 hover:bg-white/50 dark:hover:bg-[#213a56]/20 focus:bg-white dark:focus:bg-[#1a2c47]/50 disabled:opacity-70 disabled:cursor-wait"
-                />
-                
-                {/* Voice Input Button Inside the Input Field */}
-                <button
-                  type="button"
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isTranscribing}
-                  className={`absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center w-10 h-10 rounded-full transition-all duration-300 focus:outline-none disabled:opacity-50 disabled:cursor-wait ${
-                    isTranscribing 
-                      ? 'bg-transparent text-[#997953] dark:text-[#cdaa80]' // loader state
-                      : isRecording 
-                        ? 'bg-red-500 text-white animate-pulse-ring' // recording state
-                        : 'bg-transparent text-gray-400 hover:text-[#997953] dark:text-white/40 dark:hover:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-white/5' // idle state
-                  }`}
-                  aria-label={isRecording ? "Stop recording" : "Start recording"}
-                >
-                  {isTranscribing ? (
-                    <svg className="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  ) : (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={isRecording ? 2 : 1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    </svg>
-                  )}
-                </button>
 
             {/* Right Column: Recent Legal Updates (Self-stretching with internal scroll) */}
-            <div className="w-full lg:w-[320px] shrink-0 flex flex-col h-full min-h-0">
-              <div className="bg-white dark:bg-[#0f1e3f]/40 border border-[#d8c1a1] dark:border-[#cdaa80]/20 rounded-xl flex flex-col overflow-hidden flex-1 h-full min-h-0">
-                {/* Header now inside the panel for better vertical alignment */}
+            <div className="w-full lg:w-[320px] shrink-0 flex flex-col min-h-0">
+              <div className="bg-white dark:bg-[#0f1e3f]/40 border border-[#d8c1a1] dark:border-[#cdaa80]/20 rounded-xl flex flex-col overflow-hidden flex-1 min-h-0">
                 <div className="px-5 py-4 border-b border-gray-100 dark:border-white/5 bg-gray-50/30 dark:bg-white/5 shrink-0">
                   <h2 className="text-[#5b4b3d] dark:text-[#cdaa80] text-[14px] md:text-[15px] font-semibold tracking-wide uppercase">
                     RECENT LEGAL UPDATES
@@ -549,6 +489,59 @@ export default function LawyerHome() {
                     </a>
                   ))}
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Fixed Input Area at Bottom */}
+        <div ref={inputBarRef} className="absolute bottom-0 left-0 right-0 p-6 md:p-10 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-[#0f1e3f] dark:via-[#0f1e3f] dark:to-transparent z-20">
+          <div className="max-w-4xl mx-auto md:px-6">
+            <div className="flex items-center gap-4 w-full group relative">
+              <button 
+                type="button"
+                className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full border border-gray-300 dark:border-white/10 dark:bg-transparent bg-white text-gray-500 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/5 active:bg-gray-200 hover:scale-105 active:scale-95 transition-all duration-300 shrink-0 cursor-pointer shadow-sm z-10 outline-none focus:ring-2 focus:ring-[#997953]/50 dark:focus:ring-white/20"
+                aria-label="Add attachment"
+              >
+                <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+              
+              <div className="flex-1 relative cursor-text transition-transform duration-300">
+                <input 
+                  type="text" 
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  disabled={isTranscribing}
+                  placeholder={isTranscribing ? "Processing voice input..." : "Describe your legal query..."}
+                  className="w-full bg-white dark:bg-transparent border border-gray-300 dark:border-[#cdaa80]/30 rounded-full pl-6 pr-16 py-4 md:py-[18px] text-[15px] outline-none text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-white/40 focus:border-[#997953] dark:focus:border-[#cdaa80] focus:ring-1 focus:ring-[#997953] dark:focus:ring-[#cdaa80] transition-all duration-300 shadow-[0_4px_20px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] hover:border-gray-400 dark:hover:border-[#cdaa80]/60 hover:bg-white/50 dark:hover:bg-[#213a56]/20 focus:bg-white dark:focus:bg-[#1a2c47]/50 disabled:opacity-70 disabled:cursor-wait"
+                />
+                
+                <button
+                  type="button"
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={isTranscribing}
+                  className={`absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center w-10 h-10 rounded-full transition-all duration-300 focus:outline-none disabled:opacity-50 disabled:cursor-wait ${
+                    isTranscribing 
+                      ? 'bg-transparent text-[#997953] dark:text-[#cdaa80]'
+                      : isRecording 
+                        ? 'bg-red-500 text-white animate-pulse-ring'
+                        : 'bg-transparent text-gray-400 hover:text-[#997953] dark:text-white/40 dark:hover:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-white/5'
+                  }`}
+                  aria-label={isRecording ? "Stop recording" : "Start recording"}
+                >
+                  {isTranscribing ? (
+                    <svg className="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={isRecording ? 2 : 1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  )}
+                </button>
               </div>
             </div>
           </div>
@@ -613,7 +606,6 @@ export default function LawyerHome() {
         </Dialog.Portal>
       </Dialog.Root>
       
-      {/* Global CSS for the custom scrollbar */}
       <style dangerouslySetInnerHTML={{__html: `
         .custom-scrollbar::-webkit-scrollbar {
           width: 5px;
