@@ -1046,7 +1046,8 @@ export default function LawyerCaseMarketplace() {
                 </p>
               </div>
             ) : (
-              filteredDispatches.map(({ dispatch, caseData }) => {
+              filteredDispatches.map((item) => {
+                const { dispatch, caseData } = item
                 const budget = formatBudget(caseData.budget_min, caseData.budget_max)
                 const offerDate = timeAgo(dispatch.created_at)
                 const confidence = caseData.confidence_score
@@ -1130,7 +1131,7 @@ export default function LawyerCaseMarketplace() {
                           <div className="flex gap-2 flex-wrap">
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); setSelectedDispatch({ dispatch, caseData }) }}
+                              onClick={(e) => { e.stopPropagation(); setSelectedDispatch(item) }}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[160px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
                             >
                               View case
@@ -1141,7 +1142,7 @@ export default function LawyerCaseMarketplace() {
                                 e.stopPropagation()
                                 setOfferAmountInput('25000')
                                 setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
-                                setSelectedDispatch({ dispatch, caseData })
+                                setSelectedDispatch(item)
                               }}
                               disabled={isOfferSent}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[180px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
@@ -1165,10 +1166,8 @@ export default function LawyerCaseMarketplace() {
                           <button
                             type="button"
                             onClick={(e) => {
-                              e.stopPropagation();
-                              const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
-                              if (entry) setSelectedDispatch(entry);
-                              else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
+                              e.stopPropagation()
+                              setSelectedDispatch(item)
                             }}
                             className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
                           >
@@ -1180,9 +1179,7 @@ export default function LawyerCaseMarketplace() {
                               e.stopPropagation()
                               setOfferAmountInput('25000')
                               setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
-                              const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
-                              if (entry) setSelectedDispatch(entry);
-                              else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
+                              setSelectedDispatch(item)
                             }}
                             disabled={isOfferSent}
                             className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
