@@ -13,8 +13,8 @@ python-docx==1.1.2
 reportlab==4.2.0
 pdfplumber==0.11.0
 pytesseract==0.3.10
-Pillow==10.3.0
-pydantic==2.7.1
+Pillow>=11.0.0
+pydantic>=2.7.4
 tenacity==8.3.0
 python-dotenv==1.0.1
 markdown_pdf==1.13.1
