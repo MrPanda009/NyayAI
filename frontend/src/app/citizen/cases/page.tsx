@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { Sidebar } from '../../../../components/sidebar';
@@ -10,7 +11,7 @@ import { getCitizenCases } from '@/lib/db/cases';
 import { getNotifications, markAllNotificationsRead, markNotificationRead, subscribeToNotifications } from '@/lib/db/notifications';
 import type { Database } from '@/types/supabase';
 import * as Dialog from '@radix-ui/react-dialog';
-import { acceptOffer, getCasePipelineForCitizen } from '@/lib/db/pipeline';
+import { acceptOffer, getCasePipelineForCitizen, getPendingOffersCount } from '@/lib/db/pipeline';
 import { toast } from 'sonner';
 import NextLink from 'next/link';
 import { AnalysisModal } from '../../../components/AnalysisModal';
@@ -71,6 +72,7 @@ function buildFallbackAnalysisFromCase(caseRow: CaseRow | null): Record<string, 
 }
 
 export default function CaseHistory() {
+  const router = useRouter();
   const pageRef = useRef<HTMLDivElement | null>(null);
   const cardsWrapperRef = useRef<HTMLDivElement | null>(null);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
@@ -98,6 +100,7 @@ export default function CaseHistory() {
   const [notificationLoading, setNotificationLoading] = useState(false)
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
+  const [offerCounts, setOfferCounts] = useState<Record<string, number>>({})
   const notificationRef = useRef<HTMLDivElement | null>(null)
 
   const offerLifecycleNotifications = (rows: NotificationRow[]) =>
@@ -157,6 +160,21 @@ export default function CaseHistory() {
         setDbCases([])
       } else {
         setDbCases(data ?? [])
+        if (data && data.length > 0) {
+          const caseIds = data.map(c => c.id)
+          const { data: counts } = await getPendingOffersCount(caseIds)
+          if (counts) setOfferCounts(counts)
+        }
+      }
+
+      // Check URL for caseId to auto-open
+      const urlParams = new URLSearchParams(window.location.search);
+      const caseIdFromUrl = urlParams.get('caseId');
+      if (caseIdFromUrl) {
+        // Wait a small bit for state to settle or find in current dbCases
+        setTimeout(() => {
+          void openCaseDetails(caseIdFromUrl);
+        }, 500);
       }
     }
     void load()
@@ -205,8 +223,45 @@ export default function CaseHistory() {
       )
       .subscribe();
 
+    // ── Real-time pipeline subscription ──────────────────
+    const pipelineChannel = supabase
+      .channel('citizen-pipeline-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'case_pipeline',
+        },
+        async (payload) => {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return;
+
+          // If a new offer is inserted or a status changes, refresh the counts for the user's cases
+          const { data: cases } = await getCitizenCases(user.id);
+          if (cases && cases.length > 0) {
+            const caseIds = cases.map(c => c.id);
+            const { data: counts } = await getPendingOffersCount(caseIds);
+            if (counts) setOfferCounts(counts);
+
+            // If a new offer was inserted, show a toast
+            if (payload.eventType === 'INSERT' && (payload.new as any).stage === 'offered') {
+              const matchedCase = cases.find(c => c.id === (payload.new as any).case_id);
+              if (matchedCase) {
+                toast.info(`New offer received for: ${matchedCase.title}`, {
+                  description: 'Click on the case to review the lawyer\'s proposal.',
+                  duration: 6000,
+                });
+              }
+            }
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       void supabase.removeChannel(channel);
+      void supabase.removeChannel(pipelineChannel);
     };
   }, [])
 
@@ -294,23 +349,32 @@ export default function CaseHistory() {
     // Fetch case analysis from backend API using case_id
     try {
       const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '')
-      const response = await fetch(`${BACKEND_URL}/cases/${caseId}`)
-      if (response.ok) {
+      const response = await fetch(`${BACKEND_URL}/cases/${caseId}`).catch(e => {
+        console.warn('Network error fetching analysis:', e)
+        return null
+      })
+      
+      if (response && response.ok) {
         const data = await response.json()
         setCaseAnalysis(data.analysis || null)
-      } else if (response.status === 404) {
+      } else {
+        // Fetch failed or status not 2xx, try local fallback
         const fallbackAnalysis = buildFallbackAnalysisFromCase((freshCase as CaseRow) ?? caseRow)
         if (fallbackAnalysis) {
           setCaseAnalysis(fallbackAnalysis)
+        } else if (response && response.status === 404) {
+          setAnalysisError('Full analysis not yet synced to AI service. Try opening in chat first.')
+        } else if (!response) {
+          setAnalysisError('The AI analysis service is unreachable. Showing partial case data.')
         } else {
-          setAnalysisError('This case exists in dashboard list but its full analysis is not synced yet.')
+          setAnalysisError('Could not load full analysis right now.')
         }
-      } else {
-        setAnalysisError('Could not load analysis right now. Please try again.')
       }
     } catch (err) {
-      console.error('Failed to fetch case analysis:', err)
-      setAnalysisError('Could not connect to analysis service. Please try again.')
+      console.error('Failed to process case analysis:', err)
+      const fallbackAnalysis = buildFallbackAnalysisFromCase((freshCase as CaseRow) ?? caseRow)
+      if (fallbackAnalysis) setCaseAnalysis(fallbackAnalysis)
+      else setAnalysisError('Could not connect to analysis service.')
     } finally {
       setAnalysisLoading(false)
     }
@@ -319,7 +383,7 @@ export default function CaseHistory() {
     const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(caseRow.id)
     if (pipelineErr) setOffersError(pipelineErr.message)
     const rows = (pipelineRows ?? []) as Database['public']['Tables']['case_pipeline']['Row'][]
-    setOffers(rows.filter((r) => r.stage === 'offered'))
+    setOffers(rows.filter((r) => r.stage === 'offered' || r.stage === 'accepted'))
     setOffersLoading(false)
   }
 
@@ -345,13 +409,23 @@ export default function CaseHistory() {
     const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(selectedCase.id)
     if (pipelineErr) setOffersError(pipelineErr.message)
     const rows = (pipelineRows ?? []) as Database['public']['Tables']['case_pipeline']['Row'][]
-    setOffers(rows.filter((r) => r.stage === 'offered'))
+    setOffers(rows.filter((r) => r.stage === 'offered' || r.stage === 'accepted'))
 
     const { data: casesData, error: casesErr } = await getCitizenCases(authData.user.id)
     if (casesErr) setDbError(casesErr.message)
     else setDbCases(casesData ?? [])
 
     setAcceptingOfferId(null)
+    
+    // Refresh offer counts after accepting
+    const { data: authDataRefresh } = await supabase.auth.getUser()
+    if (authDataRefresh?.user) {
+      const { data: cases } = await getCitizenCases(authDataRefresh.user.id)
+      if (cases) {
+        const { data: counts } = await getPendingOffersCount(cases.map(c => c.id))
+        if (counts) setOfferCounts(counts)
+      }
+    }
   }
 
   const handleMarkAllRead = async () => {
@@ -371,9 +445,12 @@ export default function CaseHistory() {
 
     const caseId = extractCaseId(notification)
     if (caseId) {
+      // If we are already on this page, just open the modal.
+      // If we are elsewhere, the window.location change in home/page.tsx handles it.
       await openCaseDetails(caseId)
+    } else {
+      setNotificationOpen(false)
     }
-    setNotificationOpen(false)
   }
 
   const sortOptions: Array<{ label: string; value: typeof sortOption }> = [
@@ -592,27 +669,37 @@ export default function CaseHistory() {
                   ) : notifications.length === 0 ? (
                     <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No offer notifications yet.</div>
                   ) : (
-                    notifications.map((item) => (
-                      <button
-                        key={item.id}
-                        onClick={() => { void handleNotificationClick(item) }}
-                        className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${
-                          item.is_read ? 'opacity-80' : ''
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
-                            {getNotificationTitle(item)}
+                    notifications.map((item) => {
+                      const isOffer = item.type === 'offer_received';
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => { void handleNotificationClick(item) }}
+                          className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${
+                            item.is_read ? 'opacity-80' : ''
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex flex-col gap-1">
+                              <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
+                                {getNotificationTitle(item)}
+                              </p>
+                              {isOffer && (
+                                <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                                  Action Required: Accept Offer
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
+                              {formatRelativeTime(item.created_at)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
+                            {getNotificationBody(item)}
                           </p>
-                          <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
-                            {formatRelativeTime(item.created_at)}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
-                          {getNotificationBody(item)}
-                        </p>
-                      </button>
-                    ))
+                        </button>
+                      );
+                    })
                   )}
                 </div>
 
@@ -772,10 +859,15 @@ export default function CaseHistory() {
                       Just Matched!
                     </span>
                   )}
+                  {offerCounts[c.id] > 0 && (
+                    <span className="inline-flex items-center px-3 py-1.5 rounded-full text-[11px] font-bold bg-amber-500 text-white shadow-[0_0_12px_rgba(245,158,11,0.4)]">
+                      {offerCounts[c.id]} {offerCounts[c.id] === 1 ? 'New Offer' : 'New Offers'}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <p className="text-[#0f1e3f]/80 text-[15px] leading-relaxed mb-6 pr-10 relative z-10 font-medium">
+              <p className="text-[#0f1e3f]/80 text-[15px] leading-relaxed mb-6 pr-10 relative z-10 font-medium line-clamp-2">
                 {c.description}
               </p>
 
@@ -785,6 +877,17 @@ export default function CaseHistory() {
                   <span className="mx-2 opacity-30">|</span>
                   <span>Date: {c.date}</span>
                 </div>
+                {offerCounts[c.id] > 0 && c.status !== 'Lawyer Matched' && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void openCaseDetails(c.id);
+                    }}
+                    className="px-4 py-2 bg-[#0f1e3f] text-[#cdaa80] rounded-lg text-xs font-bold hover:bg-[#0f1e3f]/90 transition-all shadow-md group-hover:scale-105"
+                  >
+                    Accept Offer
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -876,13 +979,13 @@ export default function CaseHistory() {
                                     </p>
                                   ) : null}
                                 </div>
-                                <button
-                                  onClick={() => { void handleAcceptOffer(offer.id) }}
-                                  disabled={!!acceptingOfferId || selectedCase.status === 'lawyer_matched' || selectedCase.status === 'completed'}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#0f1e3f]/30 bg-[#0f1e3f] text-[#cdaa80] hover:bg-[#0f1e3f]/90 disabled:opacity-60 disabled:cursor-not-allowed"
-                                >
-                                  {acceptingOfferId === offer.id ? 'Accepting...' : 'Accept Offer'}
-                                </button>
+                                  <button
+                                    onClick={() => { void handleAcceptOffer(offer.id) }}
+                                    disabled={!!acceptingOfferId || selectedCase.status === 'lawyer_matched' || selectedCase.status === 'completed' || offer.stage === 'accepted'}
+                                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#0f1e3f]/30 bg-[#0f1e3f] text-[#cdaa80] hover:bg-[#0f1e3f]/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    {offer.stage === 'accepted' ? 'Accepted' : acceptingOfferId === offer.id ? 'Accepting...' : 'Accept Offer'}
+                                  </button>
                               </div>
                               {offer.offer_note && (
                                 <p className="mt-2 text-[12px] text-[#5b4b3d] dark:text-white/70 leading-relaxed whitespace-pre-wrap">

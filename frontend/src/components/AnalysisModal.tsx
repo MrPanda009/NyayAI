@@ -21,7 +21,7 @@ interface AnalysisModalProps {
 }
 
 export function AnalysisModal({ analysis, caseTitle, caseDomain }: AnalysisModalProps) {
-  const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '');
+  const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8001').replace(/\/$/, '');
 
   const metadata = {
     summary: analysis?.structured_facts?.incident_summary,

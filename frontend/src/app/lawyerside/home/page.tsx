@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -7,6 +7,7 @@ import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
 import { Sidebar } from '../../../../components/sidebar';
 import type { NavItem } from '../../../../components/sidebar';
 import gsap from 'gsap';
+import { supabase } from '@/lib/supabase/client';
 import { Menu, Home, Store, Gavel, X } from 'lucide-react';
 
 const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '')
@@ -19,6 +20,35 @@ const LAWYER_NAV_ITEMS: NavItem[] = [
   { id: 'marketplace', icon: Store, label: 'Marketplace', href: '/lawyerside/marketplace' },
   { id: 'my-cases', icon: Gavel, label: 'My Cases', href: '/lawyerside/my-cases' },
 ];
+
+const getReadStorageKey = (lawyerId: string) => `lawyer_home_read_notifications:${lawyerId}`;
+
+const readIdsFromStorage = (lawyerId: string): Set<string> => {
+  try {
+    const raw = localStorage.getItem(getReadStorageKey(lawyerId));
+    const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+    return new Set(parsed);
+  } catch {
+    return new Set();
+  }
+};
+
+const writeReadIdsToStorage = (lawyerId: string, ids: Set<string>) => {
+  localStorage.setItem(getReadStorageKey(lawyerId), JSON.stringify(Array.from(ids)));
+};
+
+const formatRelativeTime = (iso: string | null) => {
+  if (!iso) return 'Just now';
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffMin = Math.floor((now - then) / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+};
 
 export default function LawyerHome() {
   const router = useRouter();
@@ -38,7 +68,11 @@ export default function LawyerHome() {
 
   const [input, setInput] = useState('');
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [activeLang, setActiveLang] = useState('ENGLISH');
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notifications, setNotifications] = useState<LawyerBellNotification[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const notificationRef = useRef<HTMLDivElement | null>(null);
 
   const {
     isRecording,
@@ -56,13 +90,7 @@ export default function LawyerHome() {
     }
   }, [recorderError, resetRecording]);
 
-  useEffect(() => {
-    if (audioBlob) {
-      handleTranscription(audioBlob);
-    }
-  }, [audioBlob]);
-
-  const handleTranscription = async (blob: Blob) => {
+  const handleTranscription = useCallback(async (blob: Blob) => {
     setIsTranscribing(true);
     resetRecording();
 
@@ -89,10 +117,83 @@ export default function LawyerHome() {
     } finally {
       setIsTranscribing(false);
     }
-  };
+  }, [resetRecording]);
+
+  useEffect(() => {
+    if (audioBlob) {
+      handleTranscription(audioBlob);
+    }
+  }, [audioBlob, handleTranscription]);
 
   const handleProfileClick = () => {
     router.push('/lawyerside/profile');
+  };
+
+  const loadLawyerNotifications = useCallback(async () => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user) return;
+    const lawyerId = authData.user.id;
+
+    setNotificationLoading(true);
+
+    const { data: dispatchRows, error: dispatchErr } = await (supabase as unknown as BriefDispatchClient)
+      .from('brief_dispatches')
+      .select('id, case_id, citizen_id, intro_message, status, created_at')
+      .eq('lawyer_id', lawyerId)
+      .in('status', ['sent', 'offered'])
+      .order('created_at', { ascending: false });
+
+    if (dispatchErr) {
+      setNotificationLoading(false);
+      return;
+    }
+
+    const rows = dispatchRows ?? [];
+    const caseIds = rows.map((row) => row.case_id);
+    const { data: caseRows } = await supabase
+      .from('cases')
+      .select('id, title')
+      .in('id', caseIds);
+
+    const titleByCaseId = new Map((caseRows ?? []).map((row) => [row.id, row.title ?? 'your case']));
+    const readIds = readIdsFromStorage(lawyerId);
+
+    const mapped: LawyerBellNotification[] = rows.map((row) => ({
+      id: row.id,
+      caseId: row.case_id,
+      title: 'New citizen request received',
+      body: row.intro_message || `A citizen sent a request for ${titleByCaseId.get(row.case_id) ?? 'a case'}.`,
+      createdAt: row.created_at,
+      isRead: readIds.has(row.id),
+    }));
+
+    setNotifications(mapped);
+    setUnreadNotificationCount(mapped.filter((item) => !item.isRead).length);
+    setNotificationLoading(false);
+  }, []);
+
+  const handleMarkAllRead = async () => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user) return;
+    const lawyerId = authData.user.id;
+    const nextRead = new Set(notifications.map((item) => item.id));
+    writeReadIdsToStorage(lawyerId, nextRead);
+    setNotifications((prev) => prev.map((item) => ({ ...item, isRead: true })));
+    setUnreadNotificationCount(0);
+  };
+
+  const handleNotificationClick = async (item: LawyerBellNotification) => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (!authError && authData.user) {
+      const lawyerId = authData.user.id;
+      const nextRead = readIdsFromStorage(lawyerId);
+      nextRead.add(item.id);
+      writeReadIdsToStorage(lawyerId, nextRead);
+    }
+    setNotifications((prev) => prev.map((entry) => (entry.id === item.id ? { ...entry, isRead: true } : entry)));
+    setUnreadNotificationCount((prev) => Math.max(prev - (item.isRead ? 0 : 1), 0));
+    setNotificationOpen(false);
+    router.push('/lawyerside/marketplace');
   };
 
   const domains = [
@@ -272,10 +373,16 @@ export default function LawyerHome() {
         if (!cancelled) {
           setTopics(data.topics || []);
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) {
-          setTopics([]);
-          setTopicsError('Unable to load legal sections right now. Please try again.');
+          const fallback = FALLBACK_TOPICS_BY_DOMAIN[selectedDomain as keyof typeof FALLBACK_TOPICS_BY_DOMAIN] || [];
+          if (fallback.length > 0) {
+            setTopics(fallback);
+            setTopicsError(null);
+          } else {
+            setTopics([]);
+            setTopicsError('Unable to load legal sections right now. Please try again.');
+          }
         }
       } finally {
         if (!cancelled) {
@@ -288,7 +395,7 @@ export default function LawyerHome() {
     return () => {
       cancelled = true;
     };
-  }, [BACKEND_URL, selectedDomain]);
+  }, [selectedDomain]);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,7 +419,7 @@ export default function LawyerHome() {
           const nextUpdates = (data.updates || []).slice(0, 10);
           setLegalUpdates(nextUpdates.length ? nextUpdates : FALLBACK_LEGAL_UPDATES.slice(0, 8));
         }
-      } catch (_error) {
+      } catch {
         if (!cancelled) {
           setLegalUpdates(FALLBACK_LEGAL_UPDATES.slice(0, 8));
           setUpdatesError('Showing curated legal updates.');
@@ -331,7 +438,7 @@ export default function LawyerHome() {
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [BACKEND_URL]);
+  }, []);
 
   useGSAP(() => {
     const tl = gsap.timeline();
@@ -360,14 +467,71 @@ export default function LawyerHome() {
 
   }, { scope: containerRef });
 
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!notificationRef.current?.contains(target)) {
+        setNotificationOpen(false);
+      }
+    };
+
+    if (notificationOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [notificationOpen]);
+
+  useEffect(() => {
+    let dispatchChannel: ReturnType<typeof supabase.channel> | null = null;
+
+    const init = async () => {
+      await loadLawyerNotifications();
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) return;
+
+      dispatchChannel = supabase
+        .channel(`lawyer-home-dispatches:${authData.user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'brief_dispatches',
+            filter: `lawyer_id=eq.${authData.user.id}`,
+          },
+          async (payload) => {
+            await loadLawyerNotifications();
+            if (payload.eventType === 'INSERT') {
+              const fresh = payload.new as Record<string, unknown>;
+              toast.info('New citizen request received', {
+                description: (fresh.intro_message as string) || 'Open marketplace to review and send your offer.',
+              });
+            }
+          }
+        )
+        .subscribe();
+    };
+
+    void init();
+
+    return () => {
+      if (dispatchChannel) {
+        dispatchChannel.unsubscribe();
+      }
+    };
+  }, [loadLawyerNotifications]);
+
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0f1e3f] overflow-hidden" ref={containerRef}>
       {/* Sidebar */}
       <div className="hidden md:block shrink-0 h-screen z-[1000] md:sticky md:top-0 shadow-[4px_0_24px_rgba(0,0,0,0.05)] dark:shadow-none bg-white dark:bg-[#0a152e]">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={false} onProfileClick={handleProfileClick} />
       </div>
       <div className="md:hidden relative z-[1000]">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={false} onProfileClick={handleProfileClick} />
       </div>
 
       {/* Main Content Area */}
@@ -377,17 +541,88 @@ export default function LawyerHome() {
         <div className="absolute bottom-0 right-0 w-[300px] h-[300px] bg-[#997953]/[0.12] dark:bg-[#cdaa80]/[0.05] rounded-full blur-[80px] pointer-events-none"></div>
 
         {/* Top Right Icons */}
-        <div ref={iconsRef} className="absolute top-6 right-6 md:top-8 md:right-8 flex items-center gap-4 z-10 cursor-pointer">
-          <button className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
-            <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-            </svg>
-          </button>
-          <button className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
-            <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-            </svg>
-          </button>
+        <div ref={iconsRef} className="absolute top-6 right-6 md:top-8 md:right-8 flex items-center gap-4 z-[1300] cursor-pointer">
+          <div ref={notificationRef} className="relative">
+            <button
+              title="Notifications"
+              onClick={async () => {
+                const next = !notificationOpen;
+                setNotificationOpen(next);
+                if (next) {
+                  await loadLawyerNotifications();
+                }
+              }}
+              className="relative flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm"
+            >
+              <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              {unreadNotificationCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-[#b0372f] text-white text-[10px] font-bold flex items-center justify-center">
+                  {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                </span>
+              )}
+            </button>
+
+            {notificationOpen && (
+              <div className="absolute right-0 mt-3 w-[320px] md:w-[360px] rounded-2xl border border-[#d8c1a1]/60 dark:border-[#cdaa80]/20 bg-white/95 dark:bg-[#12284f]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[1200]">
+                <div className="px-4 py-3 border-b border-[#e8d7c1] dark:border-[#cdaa80]/20 flex items-center justify-between">
+                  <div>
+                    <p className="text-[12px] uppercase tracking-[1.5px] text-[#7b5f40] dark:text-[#cdaa80] font-semibold">Notifications</p>
+                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">New citizen requests and offer status updates</p>
+                  </div>
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="text-[11px] font-semibold text-[#997953] dark:text-[#e0c3a0] hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                </div>
+
+                <div className="max-h-[340px] overflow-y-auto custom-scrollbar">
+                  {notificationLoading ? (
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">Loading notifications...</div>
+                  ) : notifications.length === 0 ? (
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No notifications yet.</div>
+                  ) : (
+                    notifications.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => { void handleNotificationClick(item) }}
+                        className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${item.isRead ? 'opacity-80' : ''}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex flex-col gap-1">
+                            <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
+                              {item.title}
+                            </p>
+                          </div>
+                          <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
+                            {formatRelativeTime(item.createdAt)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed line-clamp-2">
+                          {item.body}
+                        </p>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                <div className="px-4 py-2 bg-[#f8efe2] dark:bg-[#10264a] border-t border-[#e8d7c1] dark:border-[#cdaa80]/20">
+                  <button
+                    onClick={() => {
+                      setNotificationOpen(false);
+                      router.push('/lawyerside/marketplace');
+                    }}
+                    className="text-[12px] font-semibold text-[#997953] dark:text-[#e0c3a0] hover:underline"
+                  >
+                    View all incoming requests
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="w-full max-w-[1400px] mx-auto px-6 py-4 md:py-5 z-10 flex flex-col flex-1 min-h-0">
@@ -703,3 +938,77 @@ const FALLBACK_LEGAL_UPDATES: LegalUpdate[] = [
     published_at: '',
   },
 ];
+
+const FALLBACK_TOPICS_BY_DOMAIN: Record<string, DomainTopic[]> = {
+  "Criminal": [
+    {
+      title: "BNS Section 103: Murder",
+      explanation: "Definition and punishment for murder. Replaces IPC Section 302. Punishment includes death or life imprisonment and fine.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "BNS Section 113: Terrorism",
+      explanation: "New section defining terrorist acts and prescribing strict punishments for acts threatening India's unity.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.98,
+      is_fallback: true
+    },
+    {
+      title: "BNS Section 303: Theft",
+      explanation: "Punishment for theft, defining dishonest takes of movable property from possession.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.95,
+      is_fallback: true
+    }
+  ],
+  "Property": [
+    {
+      title: "Transfer of Property Act - Section 54",
+      explanation: "Defines 'Sale' as a transfer of ownership for a price. Ownership is transferred by registered instrument.",
+      source_section: "Transfer of Property Act, 1882",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "Landlord-Tenant: Section 106",
+      explanation: "Duration of leases and notice periods required for termination in absence of contract.",
+      source_section: "Transfer of Property Act, 1882",
+      score: 0.97,
+      is_fallback: true
+    }
+  ],
+  "Family": [
+    {
+      title: "Hindu Marriage Act - Section 13",
+      explanation: "Grounds for divorce including adultery, cruelty, desertion, and mutual consent.",
+      source_section: "Hindu Marriage Act, 1955",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "Domestic Violence Act - Section 12",
+      explanation: "Applications to Magistrate for protection orders, residence orders, and monetary relief.",
+      source_section: "P.W.D.V.A., 2005",
+      score: 0.98,
+      is_fallback: true
+    }
+  ],
+  "Civil Procedure": [
+    {
+      title: "CPC Section 26: Institution of Suits",
+      explanation: "Every suit shall be instituted by the presentation of a plaint or in such other manner as may be prescribed.",
+      source_section: "Code of Civil Procedure, 1908",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "CPC Order 39: Temporary Injunctions",
+      explanation: "Rules regarding grant of temporary injunctions and interlocutory orders during pending trials.",
+      source_section: "Code of Civil Procedure, 1908",
+      score: 0.98,
+      is_fallback: true
+    }
+  ]
+};

@@ -161,6 +161,16 @@ export async function acceptAvailableCase(caseId: string, lawyerId: string, note
     return { data: null, error: new Error('This case has already been picked up.') }
   }
 
+  const { data: caseRow, error: caseReadErr } = await supabase
+    .from('cases')
+    .select('id, title, citizen_id')
+    .eq('id', caseId)
+    .maybeSingle()
+
+  if (caseReadErr || !caseRow) {
+    return { data: null, error: caseReadErr || new Error('Case not found.') }
+  }
+
   const { data, error } = await supabase
     .from('case_pipeline')
     .insert({
@@ -183,6 +193,20 @@ export async function acceptAvailableCase(caseId: string, lawyerId: string, note
       is_seeking_lawyer: false,
     })
     .eq('id', caseId)
+
+  if (caseRow.citizen_id) {
+    await createNotification({
+      user_id: caseRow.citizen_id,
+      type: 'offer_accepted',
+      title: 'Lawyer matched for your case',
+      body: `A lawyer has accepted your case: ${caseRow.title ?? 'Untitled'}.`,
+      data: {
+        case_id: caseId,
+        pipeline_id: data?.id,
+        lawyer_id: lawyerId
+      }
+    })
+  }
 
   return { data, error }
 }
@@ -207,4 +231,23 @@ export async function getCasePipelineForCitizen(caseId: string) {
     .eq('case_id', caseId)
     .order('created_at', { ascending: false })
   return { data, error }
+}
+
+export async function getPendingOffersCount(caseIds: string[]) {
+  if (caseIds.length === 0) return { data: {}, error: null }
+
+  const { data, error } = await supabase
+    .from('case_pipeline')
+    .select('case_id')
+    .in('case_id', caseIds)
+    .eq('stage', 'offered')
+
+  if (error) return { data: null, error }
+
+  const counts: Record<string, number> = {}
+  data.forEach(row => {
+    counts[row.case_id] = (counts[row.case_id] || 0) + 1
+  })
+
+  return { data: counts, error: null }
 }
