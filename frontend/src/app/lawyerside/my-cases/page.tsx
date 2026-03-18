@@ -322,11 +322,14 @@ export default function LawyerMyCasesPage() {
 
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-[#0f1e3f]">
-      <div className="md:sticky md:top-0 md:h-screen shrink-0 z-50">
+      <div className="hidden md:block md:sticky md:top-0 md:h-screen shrink-0 z-[1000]">
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+      </div>
+      <div className="md:hidden relative z-[1000]">
         <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
       </div>
 
-      <div className="flex-1 p-6 md:p-10 text-gray-900 dark:text-white">
+      <div className="flex-1 pt-20 px-6 pb-6 md:p-10 text-gray-900 dark:text-white">
         <div className="max-w-[1280px] mx-auto">
           <div className="mb-8">
             <h1 className="text-3xl font-medium tracking-wide text-[#997953] dark:text-[#cdaa80] mb-2 font-serif">My Cases</h1>

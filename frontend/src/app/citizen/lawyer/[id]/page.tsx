@@ -299,7 +299,7 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
   return (
     <div className="flex bg-[#111e3c] font-serif h-screen overflow-hidden" ref={containerRef}>
       {/* Sidebar Navigation */}
-      <div className="shrink-0 h-screen z-50 md:sticky md:top-0 shadow-[4px_0_24px_rgba(0,0,0,0.05)] bg-[#0a152e]">
+      <div className="shrink-0 h-screen z-[1000] md:sticky md:top-0 shadow-[4px_0_24px_rgba(0,0,0,0.05)] bg-[#0a152e]">
         <Sidebar />
       </div>
 
@@ -308,7 +308,7 @@ export default function LawyerProfilePage({ params }: { params: Promise<{ id: st
         {/* Abstract Background Elements */}
         <div className="absolute top-[-10%] right-[-5%] w-[600px] h-[600px] bg-[#e6ce9e]/[0.03] rounded-full blur-[120px] pointer-events-none"></div>
 
-        <div className="w-full max-w-5xl mx-auto px-6 py-10 z-10 flex flex-col pt-16 md:pt-20">
+        <div className="w-full max-w-5xl mx-auto px-6 py-10 z-10 flex flex-col pt-20">
           
           {/* Top Header Section removed per user request */}
 

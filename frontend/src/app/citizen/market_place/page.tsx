@@ -7,6 +7,7 @@ import { Sidebar } from '../../../../components/sidebar';
 import { supabase } from '@/lib/supabase/client';
 import type { Database } from '@/types/supabase';
 import Link from 'next/link';
+import { PriceWheel } from '../../../../components/PriceWheel';
 
 type LawyerProfile = Database['public']['Tables']['lawyer_profiles']['Row'];
 
@@ -348,11 +349,14 @@ function MarketplaceContent() {
   // ── Render ─────────────────────────────────────────────
   return (
     <div className="flex min-h-screen bg-gray-50 dark:bg-[#0f1e3f]">
-      <div className="md:sticky md:top-0 md:h-screen shrink-0 z-50">
+      <div className="hidden md:block md:sticky md:top-0 md:h-screen shrink-0 z-[1000]">
+        <Sidebar />
+      </div>
+      <div className="md:hidden relative z-[1000]">
         <Sidebar />
       </div>
 
-      <div className="flex-1 max-w-[1200px] mx-auto p-6 md:p-10 text-gray-900 dark:text-white font-serif">
+      <div className="flex-1 max-w-[1200px] mx-auto pt-20 px-6 pb-6 md:p-10 text-gray-900 dark:text-white font-serif">
 
         {/* Header */}
         <div className="mb-10">
@@ -416,33 +420,11 @@ function MarketplaceContent() {
           </div>
 
           {/* Price Wheel */}
-          <div className="relative w-full md:w-[420px] h-16 bg-[#f5eee2] dark:bg-[#0a152e] shrink-0 flex items-center justify-center overflow-hidden rounded-full border border-[#dcc7aa] dark:border-[#cdaa80]/20 shadow-[inset_0_2px_8px_rgba(153,121,83,0.12),_0_10px_24px_rgba(68,56,49,0.08)] dark:shadow-[inset_0_4px_12px_rgba(0,0,0,0.5),_0_8px_32px_rgba(0,0,0,0.4)]">
-            <div className="absolute left-0 w-24 h-full bg-gradient-to-r from-[#f5eee2] via-[#f5eee2]/80 to-transparent dark:from-[#0a152e] dark:via-[#0a152e]/80 z-20 pointer-events-none rounded-l-full" />
-            <div className="absolute right-0 w-24 h-full bg-gradient-to-l from-[#f5eee2] via-[#f5eee2]/80 to-transparent dark:from-[#0a152e] dark:via-[#0a152e]/80 z-20 pointer-events-none rounded-r-full" />
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[84px] h-[46px] bg-white/90 dark:bg-[#cdaa80]/15 border border-[#c7ab88] dark:border-[#cdaa80]/70 rounded-full z-10 pointer-events-none shadow-[0_0_18px_rgba(153,121,83,0.16)] dark:shadow-[0_0_20px_rgba(205,170,128,0.3)]" />
-            <div
-              className="absolute top-1/2 left-1/2 flex items-center transition-transform duration-500 ease-out z-10"
-              style={{ transform: `translate(calc(-${selectedPriceIndex * 84 + 42}px), -50%)` }}
-            >
-              {priceOptions.map((price, idx) => {
-                const dist       = Math.abs(idx - selectedPriceIndex)
-                const isSelected = dist === 0
-                return (
-                  <div
-                    key={price}
-                    onClick={() => setSelectedPriceIndex(idx)}
-                    className={`w-[84px] shrink-0 text-center cursor-pointer transition-all duration-300 font-serif tracking-wide text-[16px] ${isSelected ? 'text-[#997953] drop-shadow-[0_0_10px_rgba(153,121,83,0.28)] dark:text-[#cdaa80] dark:drop-shadow-[0_0_12px_rgba(205,170,128,1)]' : 'text-[#7b6958]/60 hover:text-[#443831] dark:text-[#cdaa80]/50 dark:hover:text-[#cdaa80]/80'}`}
-                    style={{
-                      transform: `scale(${isSelected ? 1.05 : Math.max(0.7, 1 - dist * 0.15)})`,
-                      opacity:    isSelected ? 1 : Math.max(0.15, 1 - dist * 0.25),
-                    }}
-                  >
-                    {price}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+          <PriceWheel
+            options={priceOptions}
+            selectedIndex={selectedPriceIndex}
+            onChange={setSelectedPriceIndex}
+          />
 
           {/* Experience */}
           <div className="relative z-40 shrink-0" ref={expDropdownRef}>
