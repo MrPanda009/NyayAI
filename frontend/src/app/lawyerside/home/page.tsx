@@ -1,15 +1,18 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { useVoiceRecorder } from '@/hooks/useVoiceRecorder';
+
 import { Sidebar } from '../../../../components/sidebar';
 import type { NavItem } from '../../../../components/sidebar';
 import gsap from 'gsap';
+import { supabase } from '@/lib/supabase/client';
+import type { Database } from '@/types/supabase';
+import { getBackendUrl } from '@/lib/utils/backendUrl';
 import { Menu, Home, Store, Gavel, X } from 'lucide-react';
 
-const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '')
+const BACKEND_URL = getBackendUrl()
 import { useGSAP } from '@gsap/react';
 import * as Dialog from '@radix-ui/react-dialog';
 
@@ -19,6 +22,69 @@ const LAWYER_NAV_ITEMS: NavItem[] = [
   { id: 'marketplace', icon: Store, label: 'Marketplace', href: '/lawyerside/marketplace' },
   { id: 'my-cases', icon: Gavel, label: 'My Cases', href: '/lawyerside/my-cases' },
 ];
+
+const getReadStorageKey = (lawyerId: string) => `lawyer_home_read_notifications:${lawyerId}`;
+
+const readIdsFromStorage = (lawyerId: string): Set<string> => {
+  try {
+    const raw = localStorage.getItem(getReadStorageKey(lawyerId));
+    const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+    return new Set(parsed);
+  } catch {
+    return new Set();
+  }
+};
+
+const writeReadIdsToStorage = (lawyerId: string, ids: Set<string>) => {
+  localStorage.setItem(getReadStorageKey(lawyerId), JSON.stringify(Array.from(ids)));
+};
+
+const formatRelativeTime = (iso: string | null) => {
+  if (!iso) return 'Just now';
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffMin = Math.floor((now - then) / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+};
+
+type BriefDispatchRow = {
+  id: string
+  case_id: string
+  citizen_id: string
+  lawyer_id: string
+  intro_message: string
+  status: string
+  created_at: string | null
+}
+
+type BriefDispatchClient = {
+  from: (table: 'brief_dispatches') => {
+    select: (columns: string) => {
+      eq: (column: string, value: string) => {
+        in: (column: string, value: string[]) => {
+          order: (column: string, options: { ascending: boolean }) => Promise<{ data: BriefDispatchRow[] | null; error: { message: string } | null }>
+        }
+      }
+    }
+  }
+}
+
+type NotificationRow = Database['public']['Tables']['notifications']['Row']
+
+type LawyerBellNotification = {
+  id: string
+  caseId: string | null
+  title: string
+  body: string
+  createdAt: string | null
+  isRead: boolean
+  kind: 'dispatch' | 'system'
+}
 
 export default function LawyerHome() {
   const router = useRouter();
@@ -34,64 +100,121 @@ export default function LawyerHome() {
   const [legalUpdates, setLegalUpdates] = useState<LegalUpdate[]>([]);
   const [loadingUpdates, setLoadingUpdates] = useState(false);
   const [updatesError, setUpdatesError] = useState<string | null>(null);
-  const inputBarRef = useRef<HTMLDivElement>(null);
-
-  const [input, setInput] = useState('');
-  const [isTranscribing, setIsTranscribing] = useState(false);
-
-  const {
-    isRecording,
-    audioBlob,
-    error: recorderError,
-    startRecording,
-    stopRecording,
-    resetRecording
-  } = useVoiceRecorder();
-
-  useEffect(() => {
-    if (recorderError) {
-      toast.error(recorderError);
-      resetRecording();
-    }
-  }, [recorderError, resetRecording]);
-
-  useEffect(() => {
-    if (audioBlob) {
-      handleTranscription(audioBlob);
-    }
-  }, [audioBlob]);
-
-  const handleTranscription = async (blob: Blob) => {
-    setIsTranscribing(true);
-    resetRecording();
-
-    try {
-      const formData = new FormData();
-      formData.append('file', blob, 'voice_recording.webm');
-
-      const transcribeUrl = `${BACKEND_URL}/transcribe`;
-      
-      const response = await axios.post(transcribeUrl, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
-      if (response.data?.text) {
-        setInput(prev => prev ? `${prev} ${response.data.text}` : response.data.text);
-      } else {
-        toast.error("Could not transcribe audio. Please try again.");
-      }
-    } catch (err) {
-      console.error("Transcription error:", err);
-      toast.error("Failed to process voice input. Please ensure backend is running.");
-    } finally {
-      setIsTranscribing(false);
-    }
-  };
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notifications, setNotifications] = useState<LawyerBellNotification[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const notificationRef = useRef<HTMLDivElement | null>(null);
 
   const handleProfileClick = () => {
     router.push('/lawyerside/profile');
+  };
+
+  const loadLawyerNotifications = useCallback(async () => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user) return;
+    const lawyerId = authData.user.id;
+
+    setNotificationLoading(true);
+
+    const { data: dispatchRows, error: dispatchErr } = await (supabase as unknown as BriefDispatchClient)
+      .from('brief_dispatches')
+      .select('id, case_id, citizen_id, intro_message, status, created_at')
+      .eq('lawyer_id', lawyerId)
+      .in('status', ['sent', 'offered'])
+      .order('created_at', { ascending: false });
+
+    if (dispatchErr) {
+      setNotificationLoading(false);
+      return;
+    }
+
+    const rows = dispatchRows ?? [];
+    const caseIds = rows.map((row) => row.case_id);
+
+    const { data: notificationRows } = await supabase
+      .from('notifications')
+      .select('id, title, body, data, created_at, is_read, type')
+      .eq('user_id', lawyerId)
+      .in('type', ['offer_accepted', 'offer_received'])
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    (notificationRows ?? []).forEach((row) => {
+      const maybeCaseId = (row.data as Record<string, unknown> | null)?.case_id;
+      if (typeof maybeCaseId === 'string') {
+        caseIds.push(maybeCaseId);
+      }
+    });
+
+    const { data: caseRows } = await supabase
+      .from('cases')
+      .select('id, title')
+      .in('id', Array.from(new Set(caseIds)));
+
+    const titleByCaseId = new Map((caseRows ?? []).map((row) => [row.id, row.title ?? 'your case']));
+    const readIds = readIdsFromStorage(lawyerId);
+
+    const dispatchMapped: LawyerBellNotification[] = rows.map((row) => ({
+      id: `dispatch:${row.id}`,
+      caseId: row.case_id,
+      title: 'New citizen request received',
+      body: row.intro_message || `A citizen sent a request for ${titleByCaseId.get(row.case_id) ?? 'a case'}.`,
+      createdAt: row.created_at,
+      isRead: readIds.has(`dispatch:${row.id}`),
+      kind: 'dispatch',
+    }));
+
+    const systemMapped: LawyerBellNotification[] = (notificationRows as NotificationRow[] | null ?? []).map((row) => {
+      const maybeData = row.data as Record<string, unknown> | null;
+      const caseId = typeof maybeData?.case_id === 'string' ? maybeData.case_id : null;
+      const fallbackTitle = caseId ? titleByCaseId.get(caseId) : null;
+      const body = row.body || (fallbackTitle ? `${fallbackTitle} has a case update.` : 'You have a new case update.');
+
+      return {
+        id: `notification:${row.id}`,
+        caseId,
+        title: row.title || 'Case update',
+        body,
+        createdAt: row.created_at,
+        isRead: row.is_read || readIds.has(`notification:${row.id}`),
+        kind: 'system',
+      };
+    });
+
+    const mapped = [...dispatchMapped, ...systemMapped].sort((a, b) => {
+      const aTs = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTs = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTs - aTs;
+    });
+
+    setNotifications(mapped);
+    setUnreadNotificationCount(mapped.filter((item) => !item.isRead).length);
+    setNotificationLoading(false);
+  }, []);
+
+  const handleMarkAllRead = async () => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user) return;
+    const lawyerId = authData.user.id;
+    const nextRead = new Set(notifications.map((item) => item.id));
+    writeReadIdsToStorage(lawyerId, nextRead);
+    setNotifications((prev) => prev.map((item) => ({ ...item, isRead: true })));
+    setUnreadNotificationCount(0);
+  };
+
+  const handleNotificationClick = async (item: LawyerBellNotification) => {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (!authError && authData.user) {
+      const lawyerId = authData.user.id;
+      const nextRead = readIdsFromStorage(lawyerId);
+      nextRead.add(item.id);
+      writeReadIdsToStorage(lawyerId, nextRead);
+    }
+    setNotifications((prev) => prev.map((entry) => (entry.id === item.id ? { ...entry, isRead: true } : entry)));
+    setUnreadNotificationCount((prev) => Math.max(prev - (item.isRead ? 0 : 1), 0));
+    setNotificationOpen(false);
+    router.push(item.kind === 'system' ? '/lawyerside/my-cases' : '/lawyerside/marketplace');
   };
 
   const domains = [
@@ -271,10 +394,16 @@ export default function LawyerHome() {
         if (!cancelled) {
           setTopics(data.topics || []);
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) {
-          setTopics([]);
-          setTopicsError('Unable to load legal sections right now. Please try again.');
+          const fallback = FALLBACK_TOPICS_BY_DOMAIN[selectedDomain as keyof typeof FALLBACK_TOPICS_BY_DOMAIN] || [];
+          if (fallback.length > 0) {
+            setTopics(fallback);
+            setTopicsError(null);
+          } else {
+            setTopics([]);
+            setTopicsError('Unable to load legal sections right now. Please try again.');
+          }
         }
       } finally {
         if (!cancelled) {
@@ -311,7 +440,7 @@ export default function LawyerHome() {
           const nextUpdates = (data.updates || []).slice(0, 10);
           setLegalUpdates(nextUpdates.length ? nextUpdates : FALLBACK_LEGAL_UPDATES.slice(0, 8));
         }
-      } catch (_error) {
+      } catch {
         if (!cancelled) {
           setLegalUpdates(FALLBACK_LEGAL_UPDATES.slice(0, 8));
           setUpdatesError('Showing curated legal updates.');
@@ -341,32 +470,130 @@ export default function LawyerHome() {
       duration: 0.6,
       ease: 'power3.out'
     })
-    .fromTo(titleRef.current, 
-      { opacity: 0, y: -30 },
-      { opacity: 1, y: 0, duration: 0.8, ease: 'power3.out' },
-      "-=0.4"
-    )
-    .fromTo(domainsHeaderRef.current, 
-      { opacity: 0, x: -20 },
-      { opacity: 1, x: 0, duration: 0.5, ease: 'power2.out' }, 
-      "-=0.2"
-    )
-    .fromTo(".domain-card", 
-      { opacity: 0, y: 30 },
-      { opacity: 1, y: 0, stagger: 0.04, duration: 0.5, ease: 'back.out(1.2)', clearProps: "all" }, 
-      "-=0.3"
-    );
+      .fromTo(titleRef.current,
+        { opacity: 0, y: -30 },
+        { opacity: 1, y: 0, duration: 0.8, ease: 'power3.out' },
+        "-=0.4"
+      )
+      .fromTo(domainsHeaderRef.current,
+        { opacity: 0, x: -20 },
+        { opacity: 1, x: 0, duration: 0.5, ease: 'power2.out' },
+        "-=0.2"
+      )
+      .fromTo(".domain-card",
+        { opacity: 0, y: 30 },
+        { opacity: 1, y: 0, stagger: 0.04, duration: 0.5, ease: 'back.out(1.2)', clearProps: "all" },
+        "-=0.3"
+      );
 
   }, { scope: containerRef });
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!notificationRef.current?.contains(target)) {
+        setNotificationOpen(false);
+      }
+    };
+
+    if (notificationOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [notificationOpen]);
+
+  useEffect(() => {
+    let liveChannel: ReturnType<typeof supabase.channel> | null = null;
+
+    const init = async () => {
+      await loadLawyerNotifications();
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) return;
+
+      liveChannel = supabase
+        .channel(`lawyer-home-dispatches:${authData.user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'brief_dispatches',
+            filter: `lawyer_id=eq.${authData.user.id}`,
+          },
+          async (payload) => {
+            await loadLawyerNotifications();
+            if (payload.eventType === 'INSERT') {
+              const fresh = payload.new as Record<string, unknown>;
+              toast.info('New citizen request received', {
+                description: (fresh.intro_message as string) || 'Open marketplace to review and send your offer.',
+              });
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'notifications',
+            filter: `user_id=eq.${authData.user.id}`,
+          },
+          async (payload) => {
+            const fresh = payload.new as Record<string, unknown>;
+            await loadLawyerNotifications();
+            if (fresh.type === 'offer_accepted') {
+              toast.success('Offer accepted by citizen', {
+                description: (fresh.title as string) || 'Your offer was accepted. Open My Cases to continue.',
+              });
+            }
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'case_pipeline',
+            filter: `lawyer_id=eq.${authData.user.id}`,
+          },
+          async (payload) => {
+            const fresh = payload.new as Record<string, unknown>;
+            if (fresh.stage === 'withdrawn') {
+              toast.info('Offer was closed', {
+                description: 'The citizen accepted another offer for this case.',
+              });
+            }
+            if (fresh.stage === 'accepted') {
+              toast.success('Case moved to My Cases', {
+                description: 'A citizen accepted your offer.',
+              });
+            }
+            await loadLawyerNotifications();
+          }
+        )
+        .subscribe();
+    };
+
+    void init();
+
+    return () => {
+      if (liveChannel) {
+        liveChannel.unsubscribe();
+      }
+    };
+  }, [loadLawyerNotifications]);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-[#0f1e3f] overflow-hidden" ref={containerRef}>
       {/* Sidebar */}
       <div className="hidden md:block shrink-0 h-screen z-[1000] md:sticky md:top-0 shadow-[4px_0_24px_rgba(0,0,0,0.05)] dark:shadow-none bg-white dark:bg-[#0a152e]">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={false} onProfileClick={handleProfileClick} />
       </div>
       <div className="md:hidden relative z-[1000]">
-        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={true} onProfileClick={handleProfileClick} />
+        <Sidebar navItems={LAWYER_NAV_ITEMS} showProfileButton={false} onProfileClick={handleProfileClick} />
       </div>
 
       {/* Main Content Area */}
@@ -376,17 +603,88 @@ export default function LawyerHome() {
         <div className="absolute bottom-0 right-0 w-[300px] h-[300px] bg-[#997953]/[0.12] dark:bg-[#cdaa80]/[0.05] rounded-full blur-[80px] pointer-events-none"></div>
 
         {/* Top Right Icons */}
-        <div ref={iconsRef} className="absolute top-6 right-6 md:top-8 md:right-8 flex items-center gap-4 z-10 cursor-pointer">
-          <button className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
-            <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-            </svg>
-          </button>
-          <button className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm">
-            <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-            </svg>
-          </button>
+        <div ref={iconsRef} className="absolute top-6 right-6 md:top-8 md:right-8 flex items-center gap-4 z-[1300] cursor-pointer">
+          <div ref={notificationRef} className="relative">
+            <button
+              title="Notifications"
+              onClick={async () => {
+                const next = !notificationOpen;
+                setNotificationOpen(next);
+                if (next) {
+                  await loadLawyerNotifications();
+                }
+              }}
+              className="relative flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border border-gray-300 dark:border-white/5 dark:bg-[#213a56]/20 bg-white text-gray-700 dark:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-[#213a56]/60 transition-all duration-300 hover:scale-105 active:scale-95 shadow-sm"
+            >
+              <svg className="w-5 h-5 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              {unreadNotificationCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-[#b0372f] text-white text-[10px] font-bold flex items-center justify-center">
+                  {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                </span>
+              )}
+            </button>
+
+            {notificationOpen && (
+              <div className="absolute right-0 mt-3 w-[320px] md:w-[360px] rounded-2xl border border-[#d8c1a1]/60 dark:border-[#cdaa80]/20 bg-white/95 dark:bg-[#12284f]/95 backdrop-blur-md shadow-2xl overflow-hidden z-[1200]">
+                <div className="px-4 py-3 border-b border-[#e8d7c1] dark:border-[#cdaa80]/20 flex items-center justify-between">
+                  <div>
+                    <p className="text-[12px] uppercase tracking-[1.5px] text-[#7b5f40] dark:text-[#cdaa80] font-semibold">Notifications</p>
+                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">New citizen requests and offer status updates</p>
+                  </div>
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="text-[11px] font-semibold text-[#997953] dark:text-[#e0c3a0] hover:underline"
+                  >
+                    Mark all read
+                  </button>
+                </div>
+
+                <div className="max-h-[340px] overflow-y-auto custom-scrollbar">
+                  {notificationLoading ? (
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">Loading notifications...</div>
+                  ) : notifications.length === 0 ? (
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No notifications yet.</div>
+                  ) : (
+                    notifications.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => { void handleNotificationClick(item) }}
+                        className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${item.isRead ? 'opacity-80' : ''}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex flex-col gap-1">
+                            <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
+                              {item.title}
+                            </p>
+                          </div>
+                          <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
+                            {formatRelativeTime(item.createdAt)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed line-clamp-2">
+                          {item.body}
+                        </p>
+                      </button>
+                    ))
+                  )}
+                </div>
+
+                <div className="px-4 py-2 bg-[#f8efe2] dark:bg-[#10264a] border-t border-[#e8d7c1] dark:border-[#cdaa80]/20">
+                  <button
+                    onClick={() => {
+                      setNotificationOpen(false);
+                      router.push('/lawyerside/marketplace');
+                    }}
+                    className="text-[12px] font-semibold text-[#997953] dark:text-[#e0c3a0] hover:underline"
+                  >
+                    View all incoming requests
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="w-full max-w-[1400px] mx-auto px-6 py-4 md:py-5 z-10 flex flex-col flex-1 min-h-0">
@@ -397,17 +695,17 @@ export default function LawyerHome() {
 
           {/* Main Content Grid Area (Flex-1 to consume exactly the remaining viewport height) */}
           <div className="w-full flex-1 flex flex-col lg:flex-row gap-8 items-stretch min-h-0">
-            
+
             {/* Left Column: Legal Domains (Expanding naturally to fill parent) */}
             <div className="flex-1 w-full flex flex-col min-h-0">
               <h2 ref={domainsHeaderRef} className="text-[#5b4b3d] dark:text-[#cdaa80] text-[15px] md:text-[17px] font-semibold tracking-wide mb-5 uppercase flex items-center gap-2 shrink-0">
                 BROWSE BY LEGAL DOMAINS
               </h2>
-              
+
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 md:gap-3 flex-1 min-h-0" ref={cardsRef}>
                 {domains.map((domain) => (
-                  <div 
-                    key={domain.title} 
+                  <div
+                    key={domain.title}
                     onClick={() => setSelectedDomain(domain.title)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
@@ -435,15 +733,15 @@ export default function LawyerHome() {
               </div>
             </div>
 
-            {/* Right Column: Recent Legal Updates (Self-stretching with internal scroll) */}
-            <div className="w-full lg:w-[320px] shrink-0 flex flex-col min-h-0">
-              <div className="bg-white dark:bg-[#0f1e3f]/40 border border-[#d8c1a1] dark:border-[#cdaa80]/20 rounded-xl flex flex-col overflow-hidden flex-1 min-h-0">
+            {/* Right Column: Recent Legal Updates */}
+            <div className="w-full lg:w-[320px] shrink-0 flex flex-col h-full min-h-0">
+              <div className="bg-white dark:bg-[#0f1e3f]/40 border border-[#d8c1a1] dark:border-[#cdaa80]/20 rounded-xl flex flex-col overflow-hidden flex-1 h-full min-h-0">
                 <div className="px-5 py-4 border-b border-gray-100 dark:border-white/5 bg-gray-50/30 dark:bg-white/5 shrink-0">
                   <h2 className="text-[#5b4b3d] dark:text-[#cdaa80] text-[14px] md:text-[15px] font-semibold tracking-wide uppercase">
                     RECENT LEGAL UPDATES
                   </h2>
                 </div>
-                
+
                 <div className="overflow-y-auto p-5 space-y-5 custom-scrollbar flex-1">
                   {loadingUpdates && (
                     <div className="text-[13px] md:text-sm font-medium text-[#443831] dark:text-white/80">
@@ -494,58 +792,7 @@ export default function LawyerHome() {
           </div>
         </div>
 
-        {/* Fixed Input Area at Bottom */}
-        <div ref={inputBarRef} className="absolute bottom-0 left-0 right-0 p-6 md:p-10 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-[#0f1e3f] dark:via-[#0f1e3f] dark:to-transparent z-20">
-          <div className="max-w-4xl mx-auto md:px-6">
-            <div className="flex items-center gap-4 w-full group relative">
-              <button 
-                type="button"
-                className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full border border-gray-300 dark:border-white/10 dark:bg-transparent bg-white text-gray-500 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/5 active:bg-gray-200 hover:scale-105 active:scale-95 transition-all duration-300 shrink-0 cursor-pointer shadow-sm z-10 outline-none focus:ring-2 focus:ring-[#997953]/50 dark:focus:ring-white/20"
-                aria-label="Add attachment"
-              >
-                <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-              
-              <div className="flex-1 relative cursor-text transition-transform duration-300">
-                <input 
-                  type="text" 
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  disabled={isTranscribing}
-                  placeholder={isTranscribing ? "Processing voice input..." : "Describe your legal query..."}
-                  className="w-full bg-white dark:bg-transparent border border-gray-300 dark:border-[#cdaa80]/30 rounded-full pl-6 pr-16 py-4 md:py-[18px] text-[15px] outline-none text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-white/40 focus:border-[#997953] dark:focus:border-[#cdaa80] focus:ring-1 focus:ring-[#997953] dark:focus:ring-[#cdaa80] transition-all duration-300 shadow-[0_4px_20px_rgba(0,0,0,0.02)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.2)] hover:border-gray-400 dark:hover:border-[#cdaa80]/60 hover:bg-white/50 dark:hover:bg-[#213a56]/20 focus:bg-white dark:focus:bg-[#1a2c47]/50 disabled:opacity-70 disabled:cursor-wait"
-                />
-                
-                <button
-                  type="button"
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={isTranscribing}
-                  className={`absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center w-10 h-10 rounded-full transition-all duration-300 focus:outline-none disabled:opacity-50 disabled:cursor-wait ${
-                    isTranscribing 
-                      ? 'bg-transparent text-[#997953] dark:text-[#cdaa80]'
-                      : isRecording 
-                        ? 'bg-red-500 text-white animate-pulse-ring'
-                        : 'bg-transparent text-gray-400 hover:text-[#997953] dark:text-white/40 dark:hover:text-[#cdaa80] hover:bg-gray-100 dark:hover:bg-white/5'
-                  }`}
-                  aria-label={isRecording ? "Stop recording" : "Start recording"}
-                >
-                  {isTranscribing ? (
-                    <svg className="animate-spin w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  ) : (
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={isRecording ? 2 : 1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+
       </div>
 
       <Dialog.Root open={!!selectedDomain} onOpenChange={(open) => { if (!open) setSelectedDomain(null); }}>
@@ -605,8 +852,9 @@ export default function LawyerHome() {
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
-      
-      <style dangerouslySetInnerHTML={{__html: `
+
+      <style dangerouslySetInnerHTML={{
+        __html: `
         .custom-scrollbar::-webkit-scrollbar {
           width: 5px;
         }
@@ -697,3 +945,77 @@ const FALLBACK_LEGAL_UPDATES: LegalUpdate[] = [
     published_at: '',
   },
 ];
+
+const FALLBACK_TOPICS_BY_DOMAIN: Record<string, DomainTopic[]> = {
+  "Criminal": [
+    {
+      title: "BNS Section 103: Murder",
+      explanation: "Definition and punishment for murder. Replaces IPC Section 302. Punishment includes death or life imprisonment and fine.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "BNS Section 113: Terrorism",
+      explanation: "New section defining terrorist acts and prescribing strict punishments for acts threatening India's unity.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.98,
+      is_fallback: true
+    },
+    {
+      title: "BNS Section 303: Theft",
+      explanation: "Punishment for theft, defining dishonest takes of movable property from possession.",
+      source_section: "Bharatiya Nyaya Sanhita, 2023",
+      score: 0.95,
+      is_fallback: true
+    }
+  ],
+  "Property": [
+    {
+      title: "Transfer of Property Act - Section 54",
+      explanation: "Defines 'Sale' as a transfer of ownership for a price. Ownership is transferred by registered instrument.",
+      source_section: "Transfer of Property Act, 1882",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "Landlord-Tenant: Section 106",
+      explanation: "Duration of leases and notice periods required for termination in absence of contract.",
+      source_section: "Transfer of Property Act, 1882",
+      score: 0.97,
+      is_fallback: true
+    }
+  ],
+  "Family": [
+    {
+      title: "Hindu Marriage Act - Section 13",
+      explanation: "Grounds for divorce including adultery, cruelty, desertion, and mutual consent.",
+      source_section: "Hindu Marriage Act, 1955",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "Domestic Violence Act - Section 12",
+      explanation: "Applications to Magistrate for protection orders, residence orders, and monetary relief.",
+      source_section: "P.W.D.V.A., 2005",
+      score: 0.98,
+      is_fallback: true
+    }
+  ],
+  "Civil Procedure": [
+    {
+      title: "CPC Section 26: Institution of Suits",
+      explanation: "Every suit shall be instituted by the presentation of a plaint or in such other manner as may be prescribed.",
+      source_section: "Code of Civil Procedure, 1908",
+      score: 0.99,
+      is_fallback: true
+    },
+    {
+      title: "CPC Order 39: Temporary Injunctions",
+      explanation: "Rules regarding grant of temporary injunctions and interlocutory orders during pending trials.",
+      source_section: "Code of Civil Procedure, 1908",
+      score: 0.98,
+      is_fallback: true
+    }
+  ]
+};

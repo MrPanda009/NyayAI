@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState, } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, } from 'react';
+import { useRouter } from 'next/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { Sidebar } from '../../../../components/sidebar';
@@ -10,13 +11,17 @@ import { getCitizenCases } from '@/lib/db/cases';
 import { getNotifications, markAllNotificationsRead, markNotificationRead, subscribeToNotifications } from '@/lib/db/notifications';
 import type { Database } from '@/types/supabase';
 import * as Dialog from '@radix-ui/react-dialog';
-import { acceptOffer, getCasePipelineForCitizen } from '@/lib/db/pipeline';
+import { acceptOffer, getCasePipelineForCitizen, getPendingOffersCount } from '@/lib/db/pipeline';
 import { toast } from 'sonner';
 import NextLink from 'next/link';
 import { AnalysisModal } from '../../../components/AnalysisModal';
+import { getBackendUrl } from '@/lib/utils/backendUrl'
+import axios from 'axios';
+import { toDomainLabel } from '@/lib/utils/domain';
 
 type CaseRow = Database['public']['Tables']['cases']['Row'];
 type NotificationRow = Database['public']['Tables']['notifications']['Row'];
+type CasePipelineRow = Database['public']['Tables']['case_pipeline']['Row'];
 
 function formatUiStatus(caseRow: CaseRow): string {
   if (caseRow.status === 'completed') return 'Case Completed'
@@ -70,6 +75,7 @@ function buildFallbackAnalysisFromCase(caseRow: CaseRow | null): Record<string, 
 }
 
 export default function CaseHistory() {
+  const router = useRouter();
   const pageRef = useRef<HTMLDivElement | null>(null);
   const cardsWrapperRef = useRef<HTMLDivElement | null>(null);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
@@ -87,7 +93,7 @@ export default function CaseHistory() {
   const [selectedCase, setSelectedCase] = useState<CaseRow | null>(null)
   const [offersLoading, setOffersLoading] = useState(false)
   const [offersError, setOffersError] = useState<string | null>(null)
-  const [offers, setOffers] = useState<Database['public']['Tables']['case_pipeline']['Row'][]>([])
+  const [offers, setOffers] = useState<CasePipelineRow[]>([])
   const [acceptingOfferId, setAcceptingOfferId] = useState<string | null>(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [caseAnalysis, setCaseAnalysis] = useState<any>(null)
@@ -97,15 +103,31 @@ export default function CaseHistory() {
   const [notificationLoading, setNotificationLoading] = useState(false)
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
+  const [offerCounts, setOfferCounts] = useState<Record<string, number>>({})
+  const [deletingCaseId, setDeletingCaseId] = useState<string | null>(null)
   const notificationRef = useRef<HTMLDivElement | null>(null)
 
-  const onlyLawyerAcceptance = (rows: NotificationRow[]) =>
+  const offerLifecycleNotifications = (rows: NotificationRow[]) =>
     rows.filter((row) => {
-      if (row.type === 'offer_accepted') return true
+      if (row.type === 'offer_received' || row.type === 'offer_accepted') return true
       const title = (row.title ?? '').toLowerCase()
       const body = (row.body ?? '').toLowerCase()
-      return title.includes('accepted') || body.includes('accepted')
+      return title.includes('offer') || body.includes('offer') || title.includes('accepted') || body.includes('accepted')
     })
+
+  const getNotificationTitle = (item: NotificationRow) => {
+    if (item.title) return item.title
+    if (item.type === 'offer_received') return 'New lawyer offer received'
+    if (item.type === 'offer_accepted') return 'Your offer acceptance is confirmed'
+    return 'Case update'
+  }
+
+  const getNotificationBody = (item: NotificationRow) => {
+    if (item.body) return item.body
+    if (item.type === 'offer_received') return 'A lawyer has sent a new offer. Open to review and accept.'
+    if (item.type === 'offer_accepted') return 'Your selected lawyer has been notified. You can continue from case details.'
+    return 'Tap to open your case updates.'
+  }
 
   const formatRelativeTime = (iso: string | null) => {
     if (!iso) return 'Just now'
@@ -142,6 +164,21 @@ export default function CaseHistory() {
         setDbCases([])
       } else {
         setDbCases(data ?? [])
+        if (data && data.length > 0) {
+          const caseIds = data.map(c => c.id)
+          const { data: counts } = await getPendingOffersCount(caseIds)
+          if (counts) setOfferCounts(counts)
+        }
+      }
+
+      // Check URL for caseId to auto-open
+      const urlParams = new URLSearchParams(window.location.search);
+      const caseIdFromUrl = urlParams.get('caseId');
+      if (caseIdFromUrl) {
+        // Wait a small bit for state to settle or find in current dbCases
+        setTimeout(() => {
+          void openCaseDetails(caseIdFromUrl);
+        }, 500);
       }
     }
     void load()
@@ -190,12 +227,49 @@ export default function CaseHistory() {
       )
       .subscribe();
 
+    // ── Real-time pipeline subscription ──────────────────
+    const pipelineChannel = supabase
+      .channel('citizen-pipeline-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'case_pipeline',
+        },
+        async (payload) => {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) return;
+
+          // If a new offer is inserted or a status changes, refresh the counts for the user's cases
+          const { data: cases } = await getCitizenCases(user.id);
+          if (cases && cases.length > 0) {
+            const caseIds = cases.map(c => c.id);
+            const { data: counts } = await getPendingOffersCount(caseIds);
+            if (counts) setOfferCounts(counts);
+
+            // If a new offer was inserted, show a toast
+            if (payload.eventType === 'INSERT' && (payload.new as any).stage === 'offered') {
+              const matchedCase = cases.find(c => c.id === (payload.new as any).case_id);
+              if (matchedCase) {
+                toast.info(`New offer received for: ${matchedCase.title}`, {
+                  description: 'Click on the case to review the lawyer\'s proposal.',
+                  duration: 6000,
+                });
+              }
+            }
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       void supabase.removeChannel(channel);
+      void supabase.removeChannel(pipelineChannel);
     };
   }, [])
 
-  const loadAcceptanceNotifications = async () => {
+  const loadOfferNotifications = useCallback(async () => {
     const { data: authData, error: authError } = await supabase.auth.getUser()
     if (authError || !authData.user) return
 
@@ -204,20 +278,20 @@ export default function CaseHistory() {
     setNotificationLoading(false)
     if (error) return
 
-    const filtered = onlyLawyerAcceptance(data ?? [])
+    const filtered = offerLifecycleNotifications(data ?? [])
     setNotifications(filtered)
     setUnreadNotificationCount(filtered.filter((row) => !row.is_read).length)
-  }
+  }, [])
 
   useEffect(() => {
     let channel: ReturnType<typeof subscribeToNotifications> | null = null
 
     const init = async () => {
-      await loadAcceptanceNotifications()
+      await loadOfferNotifications()
       const { data: authData, error: authError } = await supabase.auth.getUser()
       if (authError || !authData.user) return
       channel = subscribeToNotifications(authData.user.id, async () => {
-        await loadAcceptanceNotifications()
+        await loadOfferNotifications()
       })
     }
 
@@ -228,7 +302,33 @@ export default function CaseHistory() {
         channel.unsubscribe()
       }
     }
-  }, [])
+  }, [loadOfferNotifications])
+
+  useEffect(() => {
+    if (!selectedCase) return
+
+    const channel = supabase
+      .channel(`citizen-case-offers:${selectedCase.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'case_pipeline',
+        filter: `case_id=eq.${selectedCase.id}`,
+      }, async () => {
+        const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(selectedCase.id)
+        if (pipelineErr) {
+          setOffersError(pipelineErr.message)
+          return
+        }
+        const rows = (pipelineRows ?? []) as CasePipelineRow[]
+        setOffers(rows.filter((r) => r.stage === 'offered'))
+      })
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [selectedCase])
 
   const openCaseDetails = async (caseId: string) => {
     const caseRow = dbCases.find((c) => c.id === caseId) ?? null
@@ -252,24 +352,33 @@ export default function CaseHistory() {
 
     // Fetch case analysis from backend API using case_id
     try {
-      const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001').replace(/\/$/, '')
-      const response = await fetch(`${BACKEND_URL}/cases/${caseId}`)
-      if (response.ok) {
+      const BACKEND_URL = getBackendUrl()
+      const response = await fetch(`${BACKEND_URL}/cases/${caseId}`).catch(e => {
+        console.warn('Network error fetching analysis:', e)
+        return null
+      })
+      
+      if (response && response.ok) {
         const data = await response.json()
         setCaseAnalysis(data.analysis || null)
-      } else if (response.status === 404) {
+      } else {
+        // Fetch failed or status not 2xx, try local fallback
         const fallbackAnalysis = buildFallbackAnalysisFromCase((freshCase as CaseRow) ?? caseRow)
         if (fallbackAnalysis) {
           setCaseAnalysis(fallbackAnalysis)
+        } else if (response && response.status === 404) {
+          setAnalysisError('Full analysis not yet synced to AI service. Try opening in chat first.')
+        } else if (!response) {
+          setAnalysisError('The AI analysis service is unreachable. Showing partial case data.')
         } else {
-          setAnalysisError('This case exists in dashboard list but its full analysis is not synced yet.')
+          setAnalysisError('Could not load full analysis right now.')
         }
-      } else {
-        setAnalysisError('Could not load analysis right now. Please try again.')
       }
     } catch (err) {
-      console.error('Failed to fetch case analysis:', err)
-      setAnalysisError('Could not connect to analysis service. Please try again.')
+      console.error('Failed to process case analysis:', err)
+      const fallbackAnalysis = buildFallbackAnalysisFromCase((freshCase as CaseRow) ?? caseRow)
+      if (fallbackAnalysis) setCaseAnalysis(fallbackAnalysis)
+      else setAnalysisError('Could not connect to analysis service.')
     } finally {
       setAnalysisLoading(false)
     }
@@ -278,7 +387,7 @@ export default function CaseHistory() {
     const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(caseRow.id)
     if (pipelineErr) setOffersError(pipelineErr.message)
     const rows = (pipelineRows ?? []) as Database['public']['Tables']['case_pipeline']['Row'][]
-    setOffers(rows.filter((r) => r.stage === 'offered'))
+    setOffers(rows.filter((r) => r.stage === 'offered' || r.stage === 'accepted'))
     setOffersLoading(false)
   }
 
@@ -286,31 +395,52 @@ export default function CaseHistory() {
     if (!selectedCase) return
     setOffersError(null)
     setAcceptingOfferId(pipelineId)
-    const { data: authData, error: authError } = await supabase.auth.getUser()
-    if (authError || !authData.user) {
-      setOffersError('Please log in to accept offers.')
-      setAcceptingOfferId(null)
-      return
+
+    const getOfferErrorMessage = (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Failed to accept offer.'
+      if (/failed to fetch/i.test(message)) {
+        return 'Unable to reach the case service right now. Please check your connection and try again.'
+      }
+      return message
     }
 
-    const { error } = await acceptOffer(pipelineId, selectedCase.id)
-    if (error) {
-      setOffersError(error.message)
+    try {
+      const { data: authData, error: authError } = await supabase.auth.getUser()
+      if (authError || !authData.user) {
+        setOffersError('Please log in to accept offers.')
+        return
+      }
+
+      const { error } = await acceptOffer(pipelineId, selectedCase.id)
+      if (error) {
+        setOffersError(getOfferErrorMessage(error))
+        return
+      }
+
+      // Refresh offers + the case list so the status updates in UI
+      const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(selectedCase.id)
+      if (pipelineErr) setOffersError(pipelineErr.message)
+      const rows = (pipelineRows ?? []) as Database['public']['Tables']['case_pipeline']['Row'][]
+      setOffers(rows.filter((r) => r.stage === 'offered' || r.stage === 'accepted'))
+
+      const { data: casesData, error: casesErr } = await getCitizenCases(authData.user.id)
+      if (casesErr) setDbError(casesErr.message)
+      else setDbCases(casesData ?? [])
+
+      // Refresh offer counts after accepting
+      const { data: authDataRefresh } = await supabase.auth.getUser()
+      if (authDataRefresh?.user) {
+        const { data: cases } = await getCitizenCases(authDataRefresh.user.id)
+        if (cases) {
+          const { data: counts } = await getPendingOffersCount(cases.map(c => c.id))
+          if (counts) setOfferCounts(counts)
+        }
+      }
+    } catch (error) {
+      setOffersError(getOfferErrorMessage(error))
+    } finally {
       setAcceptingOfferId(null)
-      return
     }
-
-    // Refresh offers + the case list so the status updates in UI
-    const { data: pipelineRows, error: pipelineErr } = await getCasePipelineForCitizen(selectedCase.id)
-    if (pipelineErr) setOffersError(pipelineErr.message)
-    const rows = (pipelineRows ?? []) as Database['public']['Tables']['case_pipeline']['Row'][]
-    setOffers(rows.filter((r) => r.stage === 'offered'))
-
-    const { data: casesData, error: casesErr } = await getCitizenCases(authData.user.id)
-    if (casesErr) setDbError(casesErr.message)
-    else setDbCases(casesData ?? [])
-
-    setAcceptingOfferId(null)
   }
 
   const handleMarkAllRead = async () => {
@@ -321,6 +451,35 @@ export default function CaseHistory() {
     setUnreadNotificationCount(0)
   }
 
+  const handleDeleteCase = async (e: React.MouseEvent, caseId: string) => {
+    e.stopPropagation();
+    
+    if (!confirm("Are you sure you want to permanently delete this case and all associated documents? This cannot be undone.")) {
+      return;
+    }
+
+    setDeletingCaseId(caseId);
+    try {
+      // 1. Delete from Supabase
+      const { deleteCase } = await import('@/lib/db/cases');
+      const { error: sbError } = await deleteCase(caseId);
+      if (sbError) throw sbError;
+
+      // 2. Delete from Local SQLite & Scrub Files
+      const BACKEND_URL = getBackendUrl();
+      await axios.delete(`${BACKEND_URL}/cases/${caseId}`);
+
+      // 3. Update Local State
+      setDbCases(prev => prev.filter(c => c.id !== caseId));
+      toast.success("Case wiped out successfully.");
+    } catch (err) {
+      console.error("Failed to wipe out case:", err);
+      toast.error("Failed to completely delete the case. Some data may persist.");
+    } finally {
+      setDeletingCaseId(null);
+    }
+  };
+
   const handleNotificationClick = async (notification: NotificationRow) => {
     await markNotificationRead(notification.id)
     setNotifications((prev) =>
@@ -330,9 +489,12 @@ export default function CaseHistory() {
 
     const caseId = extractCaseId(notification)
     if (caseId) {
+      // If we are already on this page, just open the modal.
+      // If we are elsewhere, the window.location change in home/page.tsx handles it.
       await openCaseDetails(caseId)
+    } else {
+      setNotificationOpen(false)
     }
-    setNotificationOpen(false)
   }
 
   const sortOptions: Array<{ label: string; value: typeof sortOption }> = [
@@ -347,7 +509,7 @@ export default function CaseHistory() {
       id: c.id,
       title: c.title ?? 'Untitled Case',
       description: c.incident_description ?? 'No description provided.',
-      domain: (c.domain ?? 'other').replace(/_/g, ' '),
+      domain: toDomainLabel(c.domain ?? 'other'),
       date: c.created_at ? new Date(c.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Unknown',
       status: formatUiStatus(c),
     }))
@@ -515,7 +677,7 @@ export default function CaseHistory() {
                 const next = !notificationOpen
                 setNotificationOpen(next)
                 if (next) {
-                  await loadAcceptanceNotifications()
+                  await loadOfferNotifications()
                 }
               }}
               className="relative flex items-center justify-center w-10 h-10 rounded-full border border-[#d8c1a1] dark:border-white/10 bg-white dark:bg-[#12284f]/80 text-[#443831] dark:text-[#cdaa80] hover:bg-[#f9f2e8] dark:hover:bg-[#213a56] transition-all duration-300"
@@ -535,7 +697,7 @@ export default function CaseHistory() {
                 <div className="px-4 py-3 border-b border-[#e8d7c1] dark:border-[#cdaa80]/20 flex items-center justify-between">
                   <div>
                     <p className="text-[12px] uppercase tracking-[1.5px] text-[#7b5f40] dark:text-[#cdaa80] font-semibold">Notifications</p>
-                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Lawyer acceptance updates</p>
+                    <p className="text-[12px] text-[#6b5a49] dark:text-white/70">Offer and acceptance updates</p>
                   </div>
                   <button
                     onClick={handleMarkAllRead}
@@ -549,29 +711,39 @@ export default function CaseHistory() {
                   {notificationLoading ? (
                     <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">Loading notifications...</div>
                   ) : notifications.length === 0 ? (
-                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No lawyer acceptance notifications yet.</div>
+                    <div className="px-4 py-5 text-sm text-[#6b5a49] dark:text-white/70">No offer notifications yet.</div>
                   ) : (
-                    notifications.map((item) => (
-                      <button
-                        key={item.id}
-                        onClick={() => { void handleNotificationClick(item) }}
-                        className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${
-                          item.is_read ? 'opacity-80' : ''
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
-                            {item.title || 'A lawyer accepted your request'}
+                    notifications.map((item) => {
+                      const isOffer = item.type === 'offer_received';
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => { void handleNotificationClick(item) }}
+                          className={`w-full text-left block px-4 py-3 border-b border-[#efe1ce] dark:border-[#cdaa80]/10 hover:bg-[#f9f2e8] dark:hover:bg-[#1a3358] transition-colors ${
+                            item.is_read ? 'opacity-80' : ''
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex flex-col gap-1">
+                              <p className="text-[13px] font-semibold text-[#3f3124] dark:text-white/90 leading-snug">
+                                {getNotificationTitle(item)}
+                              </p>
+                              {isOffer && (
+                                <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                                  Action Required: Accept Offer
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
+                              {formatRelativeTime(item.created_at)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
+                            {getNotificationBody(item)}
                           </p>
-                          <span className="text-[11px] text-[#7b5f40] dark:text-white/60 whitespace-nowrap">
-                            {formatRelativeTime(item.created_at)}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-[12px] text-[#6b5a49] dark:text-white/75 leading-relaxed">
-                          {item.body || 'Tap to open your case updates.'}
-                        </p>
-                      </button>
-                    ))
+                        </button>
+                      );
+                    })
                   )}
                 </div>
 
@@ -731,10 +903,31 @@ export default function CaseHistory() {
                       Just Matched!
                     </span>
                   )}
+                  {offerCounts[c.id] > 0 && (
+                    <span className="inline-flex items-center px-3 py-1.5 rounded-full text-[11px] font-bold bg-amber-500 text-white shadow-[0_0_12px_rgba(245,158,11,0.4)]">
+                      {offerCounts[c.id]} {offerCounts[c.id] === 1 ? 'New Offer' : 'New Offers'}
+                    </span>
+                  )}
+                  
+                  {/* Delete Button */}
+                  <button
+                    onClick={(e) => handleDeleteCase(e, c.id)}
+                    disabled={deletingCaseId === c.id}
+                    className="flex items-center justify-center w-8 h-8 rounded-full border border-[#0f1e3f]/10 text-[#0f1e3f]/40 hover:bg-red-500 hover:text-white hover:border-transparent transition-all duration-300"
+                    title="Delete Case"
+                  >
+                    {deletingCaseId === c.id ? (
+                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
 
-              <p className="text-[#0f1e3f]/80 text-[15px] leading-relaxed mb-6 pr-10 relative z-10 font-medium">
+              <p className="text-[#0f1e3f]/80 text-[15px] leading-relaxed mb-6 pr-10 relative z-10 font-medium line-clamp-2">
                 {c.description}
               </p>
 
@@ -744,6 +937,17 @@ export default function CaseHistory() {
                   <span className="mx-2 opacity-30">|</span>
                   <span>Date: {c.date}</span>
                 </div>
+                {offerCounts[c.id] > 0 && c.status !== 'Lawyer Matched' && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void openCaseDetails(c.id);
+                    }}
+                    className="px-4 py-2 bg-[#0f1e3f] text-[#cdaa80] rounded-lg text-xs font-bold hover:bg-[#0f1e3f]/90 transition-all shadow-md group-hover:scale-105"
+                  >
+                    Accept Offer
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -765,7 +969,7 @@ export default function CaseHistory() {
                     {selectedCase?.title ?? 'Untitled Case'}
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-sm font-sans text-[#5b4b3d] dark:text-white/70">
-                    {selectedCase ? selectedCase.domain?.replace(/_/g, ' ') : ''}
+                    {selectedCase ? toDomainLabel(selectedCase.domain) : ''}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close className="rounded-lg px-3 py-1.5 text-sm font-sans border border-[#d8c1a1] dark:border-[#cdaa80]/30 hover:bg-[#f9f4ec] dark:hover:bg-[#12284f]">
@@ -798,6 +1002,62 @@ export default function CaseHistory() {
                       AI analysis not yet available for this case. Check back soon!
                     </div>
                   )}
+
+                  <div className="mt-4 rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 p-4 bg-[#fdf9f3] dark:bg-[#12284f]/50">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h3 className="text-base font-serif text-[#997953] dark:text-[#cdaa80]">Lawyer Offers</h3>
+                      {selectedCase.status === 'lawyer_matched' && (
+                        <span className="text-[11px] uppercase tracking-wide font-semibold text-emerald-700 dark:text-emerald-300">Accepted</span>
+                      )}
+                    </div>
+
+                    {offersLoading ? (
+                      <p className="text-sm text-[#5b4b3d] dark:text-white/70">Loading offers...</p>
+                    ) : offersError ? (
+                      <p className="text-sm text-red-600 dark:text-red-300">{offersError}</p>
+                    ) : offers.length === 0 ? (
+                      <p className="text-sm text-[#5b4b3d] dark:text-white/70">No active offers for this case yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {offers.map((offer) => {
+                          const joinedLawyer = (offer as CasePipelineRow & { lawyer_profiles?: { full_name?: string | null; experience_years?: number | null } }).lawyer_profiles
+                          return (
+                            <div key={offer.id} className="rounded-lg border border-[#d8c1a1] dark:border-[#cdaa80]/20 p-3 bg-white dark:bg-[#0f1e3f]/60">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-[#2f261f] dark:text-white/90">
+                                    {joinedLawyer?.full_name ?? 'Verified lawyer'}
+                                  </p>
+                                  <p className="text-[12px] text-[#5b4b3d] dark:text-white/70">
+                                    {offer.offer_amount
+                                      ? `Offer: INR ${offer.offer_amount.toLocaleString('en-IN')}`
+                                      : 'Offer amount not specified'}
+                                  </p>
+                                  {joinedLawyer?.experience_years ? (
+                                    <p className="text-[12px] text-[#5b4b3d] dark:text-white/60">
+                                      Experience: {joinedLawyer.experience_years} years
+                                    </p>
+                                  ) : null}
+                                </div>
+                                  <button
+                                    onClick={() => { void handleAcceptOffer(offer.id) }}
+                                    disabled={!!acceptingOfferId || selectedCase.status === 'lawyer_matched' || selectedCase.status === 'completed' || offer.stage === 'accepted'}
+                                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#0f1e3f]/30 bg-[#0f1e3f] text-[#cdaa80] hover:bg-[#0f1e3f]/90 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    {offer.stage === 'accepted' ? 'Accepted' : acceptingOfferId === offer.id ? 'Accepting...' : 'Accept Offer'}
+                                  </button>
+                              </div>
+                              {offer.offer_note && (
+                                <p className="mt-2 text-[12px] text-[#5b4b3d] dark:text-white/70 leading-relaxed whitespace-pre-wrap">
+                                  {offer.offer_note}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </Dialog.Content>

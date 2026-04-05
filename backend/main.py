@@ -1,5 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -8,6 +7,8 @@ import io
 import uuid
 import os
 import sys
+import shutil
+from pathlib import Path
 
 # Setup paths to ensure we can import from agents and schemas
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "agents")))
@@ -20,6 +21,8 @@ from retrieval import get_domain_topic_sections
 import json
 import sqlite3
 from datetime import datetime
+from app.core.auth import get_current_citizen
+from app.core.supabase import supabase_admin
 
 app = FastAPI(title="NyayaAI API", version="4.0.0")
 
@@ -38,6 +41,7 @@ class IntakeRequest(BaseModel):
     language_preference: Literal["hindi", "english", "hinglish"] = "english"
     state_jurisdiction: Optional[str] = "Maharashtra"
     mode: Literal["citizen", "lawyer"] = "citizen"
+    file_paths: Optional[list[str]] = []
 
 
 class DomainTopicsRequest(BaseModel):
@@ -70,6 +74,11 @@ class LegalUpdatesResponse(BaseModel):
     updates: list[LegalUpdateItem]
     mode: str
     fetched_at: str
+
+
+class AcceptOfferRequest(BaseModel):
+    pipeline_id: str
+    case_id: str
 
 @app.get("/health")
 async def health():
@@ -204,6 +213,20 @@ def save_case_to_db(case_data: dict):
     finally:
         conn.close()
 
+def delete_case_from_local_db(case_id: str):
+    """Deletes a case record from the local SQLite database."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting case from SQLite: {e}")
+        return False
+    finally:
+        conn.close()
+
 def get_all_cases():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -234,6 +257,61 @@ def get_case_by_id(case_id: str):
     
     return case_dict
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+@app.post("/upload")
+async def upload_files(files: list[UploadFile] = File(...)):
+    saved_paths = []
+    for file in files:
+        if not file.filename:
+            continue
+        file_ext = os.path.splitext(file.filename)[1]
+        unique_name = f"{uuid.uuid4()}{file_ext}"
+        target_path = UPLOAD_DIR / unique_name
+        
+        with target_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        saved_paths.append(str(target_path))
+    
+    return {"file_paths": saved_paths}
+
+@app.delete("/cases/{case_id}")
+async def delete_case(case_id: str):
+    """Performs a complete wipeout of a case: Files, SQLite record, and In-memory state."""
+    logger.info(f"Complete wipeout requested for case: {case_id}")
+    
+    # 1. Retrieve case metadata to find associated files
+    case_data = get_case_by_id(case_id)
+    if case_data and case_data.get('metadata_json'):
+        try:
+            full_metadata = json.loads(case_data['metadata_json'])
+            # Check for files in 'uploaded_files' (Agent 1) or 'file_paths' (Legacy)
+            files_to_delete = full_metadata.get('uploaded_files', []) or full_metadata.get('file_paths', [])
+            
+            for f_path in files_to_delete:
+                p = Path(f_path)
+                if p.exists():
+                    p.unlink()
+                    logger.info(f"Deleted file: {f_path}")
+        except Exception as e:
+            logger.error(f"Error scrubbing files for case {case_id}: {e}")
+
+    # 2. Delete from SQLite
+    db_success = delete_case_from_local_db(case_id)
+    
+    # 3. Clear In-memory state
+    if case_id in _case_store:
+        del _case_store[case_id]
+    if case_id in _case_rounds:
+        del _case_rounds[case_id]
+    
+    if not db_success:
+        raise HTTPException(status_code=500, detail="Failed to delete case from local database.")
+        
+    return {"status": "success", "message": f"Case {case_id} and all associated data wiped out."}
+
 @app.post("/analyze")
 async def analyze_case(request: IntakeRequest):
     try:
@@ -249,9 +327,15 @@ async def analyze_case(request: IntakeRequest):
         if existing_state:
             # Append new input to previous narrative
             old_narrative = existing_state.get("raw_narrative", "")
-            new_narrative = f"{old_narrative}\n\nUser: {request.raw_narrative}"
-            existing_state["raw_narrative"] = new_narrative
+            if request.raw_narrative:
+                new_narrative = f"{old_narrative}\n\nUser: {request.raw_narrative}"
+                existing_state["raw_narrative"] = new_narrative
             
+            # Append new uploaded files if any
+            if request.file_paths:
+                existing_files = existing_state.get("uploaded_files", [])
+                existing_state["uploaded_files"] = existing_files + request.file_paths
+
             # Reset intake status and questions to allow Agent 1 to re-process with new context
             existing_state["intake_status"] = "collecting_info"
             existing_state["follow_up_questions"] = []
@@ -264,7 +348,7 @@ async def analyze_case(request: IntakeRequest):
                 "raw_narrative": request.raw_narrative,
                 "language_preference": request.language_preference,
                 "state_jurisdiction": request.state_jurisdiction,
-                "uploaded_files": []
+                "uploaded_files": request.file_paths or []
             }
 
         # 3. Determine if we should force completion
@@ -318,6 +402,120 @@ async def get_case_analysis(case_id: str):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
+
+
+@app.post("/pipeline/accept-offer")
+async def accept_offer_secure(
+    request: AcceptOfferRequest,
+    user=Depends(get_current_citizen),
+):
+    citizen_id = user.get("sub")
+    if not citizen_id:
+        raise HTTPException(status_code=401, detail="Invalid auth token")
+
+    try:
+        pipeline_res = (
+            supabase_admin
+            .table("case_pipeline")
+            .select("id, case_id, lawyer_id, stage, offer_amount")
+            .eq("id", request.pipeline_id)
+            .maybe_single()
+            .execute()
+        )
+        pipeline_row = pipeline_res.data
+
+        if not pipeline_row:
+            raise HTTPException(status_code=404, detail="Offer not found")
+
+        if pipeline_row.get("case_id") != request.case_id:
+            raise HTTPException(status_code=409, detail="Offer does not belong to this case")
+
+        if pipeline_row.get("stage") != "offered":
+            raise HTTPException(status_code=409, detail="Offer is no longer pending")
+
+        case_res = (
+            supabase_admin
+            .table("cases")
+            .select("id, title, citizen_id, status")
+            .eq("id", request.case_id)
+            .maybe_single()
+            .execute()
+        )
+        case_row = case_res.data
+
+        if not case_row:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        if case_row.get("citizen_id") != citizen_id:
+            raise HTTPException(status_code=403, detail="You are not allowed to accept offers for this case")
+
+        if case_row.get("status") in ["lawyer_matched", "active", "completed"]:
+            raise HTTPException(status_code=409, detail="Case is already matched")
+
+        now_iso = datetime.utcnow().isoformat()
+
+        accepted_res = (
+            supabase_admin
+            .table("case_pipeline")
+            .update({"stage": "accepted", "accepted_at": now_iso})
+            .eq("id", request.pipeline_id)
+            .execute()
+        )
+
+        (
+            supabase_admin
+            .table("case_pipeline")
+            .update({"stage": "withdrawn"})
+            .eq("case_id", request.case_id)
+            .eq("stage", "offered")
+            .neq("id", request.pipeline_id)
+            .execute()
+        )
+
+        (
+            supabase_admin
+            .table("cases")
+            .update({
+                "status": "lawyer_matched",
+                "lawyer_matched_at": now_iso,
+                "is_seeking_lawyer": False,
+            })
+            .eq("id", request.case_id)
+            .execute()
+        )
+
+        lawyer_id = pipeline_row.get("lawyer_id")
+        if lawyer_id:
+            amount = pipeline_row.get("offer_amount")
+            amount_suffix = f" (Offer: INR {int(amount):,})" if isinstance(amount, (int, float)) else ""
+            (
+                supabase_admin
+                .table("notifications")
+                .insert({
+                    "user_id": lawyer_id,
+                    "type": "offer_accepted",
+                    "title": "Your offer was accepted",
+                    "body": f"{case_row.get('title') or 'A case'} has accepted your offer{amount_suffix}.",
+                    "data": {
+                        "case_id": request.case_id,
+                        "pipeline_id": request.pipeline_id,
+                        "lawyer_id": lawyer_id,
+                    },
+                })
+                .execute()
+            )
+
+        return {
+            "success": True,
+            "pipeline": accepted_res.data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Secure offer accept failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to accept offer")
+
+
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     """Accept an audio file and return its Sarvam STT transcription."""

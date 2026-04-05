@@ -23,7 +23,7 @@ from markdown_pdf import MarkdownPdf, Section
 
 from case_state import GeneratedDocuments, GeneratedDoc
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 logger = logging.getLogger(__name__)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -57,7 +57,7 @@ def _call_with_retry(prompt: str, system_prompt: str, client: Groq, max_attempts
         try:
             response = client.chat.completions.create(
                 model=GROQ_MODEL,
-                temperature=0.1,
+                temperature=0.0,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},

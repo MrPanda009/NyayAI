@@ -9,9 +9,11 @@ import { LiquidSlider } from '../../../../components/LiquidSlider';
 import { supabase } from '@/lib/supabase/client';
 import type { Database } from '@/types/supabase';
 import { Menu, Home, Compass, Store, Gavel } from 'lucide-react';
-import { acceptAvailableCase } from '@/lib/db/pipeline';
+import { createNotification } from '@/lib/db/notifications';
 import * as Dialog from '@radix-ui/react-dialog';
 import { PriceWheel } from '../../../../components/PriceWheel';
+import { toast } from 'sonner';
+import { canonicalizeDomain, domainsMatch, toDomainLabel } from '@/lib/utils/domain';
 
 type CaseRow = Database['public']['Tables']['cases']['Row'];
 type LawyerProfile = Database['public']['Tables']['lawyer_profiles']['Row'];
@@ -52,6 +54,7 @@ type BriefDispatchClient = {
 type CasePreview = Pick<
   CaseRow,
   | 'id'
+  | 'citizen_id'
   | 'title'
   | 'domain'
   | 'status'
@@ -109,45 +112,6 @@ const LAWYER_NAV_ITEMS: NavItem[] = [
   { id: 'my-cases', icon: Gavel, label: 'My Cases', href: '/lawyerside/my-cases' },
 ];
 
-const DOMAIN_LABELS: Record<string, string> = {
-  consumer: 'Consumer Disputes',
-  tenant: 'Tenant / Rent',
-  labour: 'Labour & Employment',
-  criminal: 'Criminal Law',
-  cyber: 'Cyber Crime',
-  property: 'Property Law',
-  family: 'Family Law',
-  rti: 'RTI',
-  corruption: 'Anti-Corruption',
-  civil: 'Civil Law',
-  other: 'General Practice',
-  tax: 'Tax Law',
-  corporate: 'Corporate / Business',
-  intellectual_property: 'Intellectual Property',
-  constitutional: 'Constitutional / PIL',
-  banking_finance: 'Banking & Finance',
-  insurance: 'Insurance',
-  matrimonial: 'Matrimonial',
-  immigration: 'Immigration',
-  environmental: 'Environmental Law',
-  medical_negligence: 'Medical Negligence',
-  motor_accident: 'Motor Accident Claims',
-  cheque_bounce: 'Cheque Bounce (NI Act)',
-  debt_recovery: 'Debt Recovery',
-  arbitration: 'Arbitration & ADR',
-  service_matters: 'Service Matters',
-  land_acquisition: 'Land Acquisition',
-  wills_succession: 'Wills & Succession',
-  domestic_violence: 'Domestic Violence',
-  pocso: 'POCSO',
-  sc_st_atrocities: 'SC/ST Atrocities Act',
-  divorce: 'Divorce',
-}
-
-function formatDomain(domain: string): string {
-  return DOMAIN_LABELS[domain] ?? domain.replace(/_/g, ' ')
-}
-
 function formatBudget(min: number | null, max: number | null): string {
   if (!min && !max) return 'Budget not specified'
   if (min && !max) return `From ₹${min.toLocaleString('en-IN')}`
@@ -196,7 +160,7 @@ export default function LawyerCaseMarketplace() {
   const [offeredError, setOfferedError] = useState<string | null>(null)
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'left' | 'right'>('left')
-  const [acceptingCaseId, setAcceptingCaseId] = useState<string | null>(null)
+  const [offeredCaseIds, setOfferedCaseIds] = useState<Set<string>>(new Set())
   const [now, setNow] = useState<number>(0)
   const [selectedAvailable, setSelectedAvailable] = useState<CasePreview | null>(null)
   const [selectedDispatch, setSelectedDispatch] = useState<IncomingDispatch | null>(null)
@@ -227,7 +191,7 @@ export default function LawyerCaseMarketplace() {
       setHiddenAvailableCaseIds(new Set())
       setHiddenIncomingDispatchIds(new Set())
     }
-  }, [])
+  }, [lawyerProfile?.full_name])
 
   const persistHiddenAvailable = useCallback((lawyerId: string, next: Set<string>) => {
     localStorage.setItem(getHiddenAvailableKey(lawyerId), JSON.stringify(Array.from(next)))
@@ -337,21 +301,24 @@ export default function LawyerCaseMarketplace() {
 
     const offerPayload = {
       offer_amount: offerAmount,
-      offer_message: offerMessage.trim(),
-      offer_note: incoming.dispatch.intro_message,
+      offer_note: `Lawyer note: ${incoming.dispatch.intro_message}\n\nOffer details: ${offerMessage.trim()}`,
       offer_sent_at: new Date().toISOString(),
     }
 
     let offerErr: { message: string } | null = null
+    let pipelineIdForNotification: string | null = null
 
     if (existing?.stage === 'offered') {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('case_pipeline')
         .update(offerPayload)
         .eq('id', existing.id)
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? existing.id
       offerErr = error
     } else {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('case_pipeline')
         .insert({
           case_id: incoming.caseData.id,
@@ -359,6 +326,9 @@ export default function LawyerCaseMarketplace() {
           stage: 'offered',
           ...offerPayload,
         })
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? null
       offerErr = error
     }
 
@@ -372,6 +342,18 @@ export default function LawyerCaseMarketplace() {
       .from('brief_dispatches')
       .update({ status: 'offered' })
       .eq('id', incoming.dispatch.id)
+
+    await createNotification({
+      user_id: incoming.dispatch.citizen_id,
+      type: 'offer_received',
+      title: 'New lawyer offer received',
+      body: `${lawyerProfile?.full_name ?? 'A lawyer'} sent an offer for ${incoming.caseData.title ?? 'your case'}.`,
+      data: {
+        case_id: incoming.caseData.id,
+        pipeline_id: pipelineIdForNotification,
+        lawyer_id: authData.user.id,
+      },
+    })
 
     setIncomingDispatches((prev) =>
       prev.map((d) =>
@@ -389,26 +371,108 @@ export default function LawyerCaseMarketplace() {
     setSendingOffer(false)
   }, [])
 
-  const handleAcceptAvailable = useCallback(async (caseId: string) => {
+  const handleSendOfferForAvailable = useCallback(async (caseData: CasePreview, offerAmountRaw: string, offerMessage: string) => {
+    const offerAmount = Number(offerAmountRaw)
+    if (!Number.isFinite(offerAmount) || offerAmount <= 0) {
+      setDbError('Invalid offer amount.')
+      return
+    }
+    if (!offerMessage || offerMessage.trim().length < 10) {
+      setDbError('Please add a clear offer message (at least 10 characters).')
+      return
+    }
+
     const { data: authData, error: authError } = await supabase.auth.getUser()
     if (authError || !authData.user) {
       setDbError('Not authenticated. Please log in.')
       return
     }
 
-    setAcceptingCaseId(caseId)
-    const { error } = await acceptAvailableCase(caseId, authData.user.id, 'Lawyer accepted an available case.')
-    setAcceptingCaseId(null)
-    if (error) {
-      setDbError(error.message)
+    setSendingOffer(true)
+
+    const { data: existingRows, error: existingErr } = await supabase
+      .from('case_pipeline')
+      .select('id, stage')
+      .eq('case_id', caseData.id)
+      .eq('lawyer_id', authData.user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (existingErr) {
+      setDbError(existingErr.message)
+      setSendingOffer(false)
       return
     }
 
-    // Instant UI feedback: remove from Available list
-    setAllCases((prev) => prev.filter((c) => c.id !== caseId))
+    const existing = existingRows?.[0] ?? null
+    if (existing?.stage && ['accepted', 'active', 'completed'].includes(existing.stage)) {
+      setDbError('This case is already accepted and moved to My Cases.')
+      setSendingOffer(false)
+      return
+    }
+
+    const offerPayload = {
+      offer_amount: offerAmount,
+      offer_note: `Offer details: ${offerMessage.trim()}`,
+      offer_sent_at: new Date().toISOString(),
+    }
+
+    let offerErr: { message: string } | null = null
+    let pipelineIdForNotification: string | null = null
+
+    if (existing?.stage === 'offered') {
+      const { data, error } = await supabase
+        .from('case_pipeline')
+        .update(offerPayload)
+        .eq('id', existing.id)
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? existing.id
+      offerErr = error
+    } else {
+      const { data, error } = await supabase
+        .from('case_pipeline')
+        .insert({
+          case_id: caseData.id,
+          lawyer_id: authData.user.id,
+          stage: 'offered',
+          ...offerPayload,
+        })
+        .select('id')
+        .single()
+      pipelineIdForNotification = data?.id ?? null
+      offerErr = error
+    }
+
+    if (offerErr) {
+      setDbError(offerErr.message)
+      setSendingOffer(false)
+      return
+    }
+
+    if (caseData.citizen_id) {
+      await createNotification({
+        user_id: caseData.citizen_id,
+        type: 'offer_received',
+        title: 'New lawyer offer received',
+        body: `${lawyerProfile?.full_name ?? 'A lawyer'} sent an offer for ${caseData.title ?? 'your case'}.`,
+        data: {
+          case_id: caseData.id,
+          pipeline_id: pipelineIdForNotification,
+          lawyer_id: authData.user.id,
+        },
+      })
+    }
+
+    setOfferedCaseIds((prev) => {
+      const next = new Set(prev)
+      next.add(caseData.id)
+      return next
+    })
+
     setSelectedAvailable(null)
-    router.push('/lawyerside/my-cases')
-  }, [router])
+    setSendingOffer(false)
+  }, [lawyerProfile?.full_name])
 
   const statusPillClass = dbError
     ? 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-500/20 dark:text-red-300 dark:ring-red-500/20'
@@ -478,6 +542,9 @@ export default function LawyerCaseMarketplace() {
       setLawyerProfile(profile)
 
       const specialisations = profile.specialisations ?? []
+      const specializationSet = new Set(
+        specialisations.map((item) => canonicalizeDomain(item)).filter(Boolean)
+      )
 
       // 3. Get all assigned case IDs from case_pipeline
       const { data: pipelineData } = await supabase
@@ -489,8 +556,7 @@ export default function LawyerCaseMarketplace() {
       // 4. Fetch cases that are seeking a lawyer (Available tab)
       const query = supabase
         .from('cases')
-        // keep citizen anonymous for lawyers: do not fetch citizen_id
-        .select('id, title, domain, status, state, district, incident_description, incident_date, budget_min, budget_max, confidence_score, created_at')
+        .select('id, citizen_id, title, domain, status, state, district, incident_description, incident_date, budget_min, budget_max, confidence_score, created_at')
         .eq('is_seeking_lawyer', true)
         .eq('status', 'seeking_lawyer')
         .order('created_at', { ascending: false })
@@ -501,7 +567,12 @@ export default function LawyerCaseMarketplace() {
         setDbError(casesError.message)
       } else {
         const unassigned = (casesData ?? []).filter(c => !assignedCaseIds.has(c.id))
-        setAllCases(unassigned)
+        const scopedToLawyer = unassigned.filter((c) => {
+          const caseDomain = canonicalizeDomain(c.domain)
+          if (!caseDomain) return false
+          return specializationSet.size === 0 || specializationSet.has(caseDomain)
+        })
+        setAllCases(scopedToLawyer)
       }
       setIsLoading(false)
 
@@ -528,7 +599,7 @@ export default function LawyerCaseMarketplace() {
       const caseIds = (dispatchRows as BriefDispatchRow[]).map((d) => d.case_id)
       const { data: caseRows, error: caseErr } = await supabase
         .from('cases')
-        .select('id, title, domain, status, state, district, incident_description, incident_date, budget_min, budget_max, confidence_score, created_at')
+        .select('id, citizen_id, title, domain, status, state, district, incident_description, incident_date, budget_min, budget_max, confidence_score, created_at')
         .in('id', caseIds)
 
       if (caseErr) {
@@ -567,6 +638,15 @@ export default function LawyerCaseMarketplace() {
         .filter((entry) => !['accepted', 'active', 'completed'].includes(entry.offerStage ?? ''))
 
       setIncomingDispatches(merged)
+
+      const { data: ownOffers } = await supabase
+        .from('case_pipeline')
+        .select('case_id, stage, created_at')
+        .eq('lawyer_id', user.id)
+        .eq('stage', 'offered')
+        .order('created_at', { ascending: false })
+
+      setOfferedCaseIds(new Set((ownOffers ?? []).map((row) => row.case_id)))
     } catch (err) {
       console.error('Error fetching data:', err)
       setDbError('Unexpected error loading cases.')
@@ -603,6 +683,54 @@ export default function LawyerCaseMarketplace() {
   }, [fetchData])
 
   useEffect(() => {
+    if (!currentLawyerId) return
+
+    const channel = supabase
+      .channel(`lawyer-marketplace-notifications:${currentLawyerId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${currentLawyerId}`,
+        },
+        (payload) => {
+          const fresh = payload.new as Record<string, unknown>
+          if (fresh.type === 'offer_accepted') {
+            toast.success('Your offer was accepted', {
+              description: (fresh.body as string) || 'Open My Cases to continue this matter.',
+            })
+            fetchData()
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'case_pipeline',
+          filter: `lawyer_id=eq.${currentLawyerId}`,
+        },
+        (payload) => {
+          const fresh = payload.new as Record<string, unknown>
+          if (fresh.stage === 'withdrawn') {
+            toast.info('Offer no longer active', {
+              description: 'Citizen accepted another lawyer for this case.',
+            })
+            fetchData()
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [currentLawyerId, fetchData])
+
+  useEffect(() => {
     // snapshot time for render-purity lint and stable filtering
     setNow(Date.now())
   }, [activeTab, selectedRecency])
@@ -613,11 +741,13 @@ export default function LawyerCaseMarketplace() {
     : incomingDispatches.map((d) => d.caseData)
 
   const domainOptions = useMemo(() => {
-    const lawyerSpecs = new Set<string>(lawyerProfile?.specialisations ?? [])
+    const lawyerSpecs = new Set<string>((lawyerProfile?.specialisations ?? []).map((spec) => canonicalizeDomain(spec)).filter(Boolean))
     const domains = new Set<string>()
     activeCaseList.forEach(c => {
-      if (lawyerSpecs.size === 0 || lawyerSpecs.has(c.domain)) {
-        domains.add(c.domain)
+      const caseDomain = canonicalizeDomain(c.domain)
+      if (!caseDomain) return
+      if (lawyerSpecs.size === 0 || lawyerSpecs.has(caseDomain)) {
+        domains.add(caseDomain)
       }
     })
     return Array.from(domains).sort()
@@ -630,7 +760,7 @@ export default function LawyerCaseMarketplace() {
     result = result.filter((c) => !hiddenAvailableCaseIds.has(c.id))
 
     if (selectedDomain !== 'Legal Domain') {
-      result = result.filter(c => c.domain === selectedDomain)
+      result = result.filter(c => domainsMatch(c.domain, selectedDomain))
     }
 
     if (selectedRecency !== 'Any Time') {
@@ -655,7 +785,7 @@ export default function LawyerCaseMarketplace() {
     result = result.filter((o) => !hiddenIncomingDispatchIds.has(o.dispatch.id))
 
     if (selectedDomain !== 'Legal Domain') {
-      result = result.filter(o => o.caseData.domain === selectedDomain)
+      result = result.filter(o => domainsMatch(o.caseData.domain, selectedDomain))
     }
 
     if (selectedRecency !== 'Any Time') {
@@ -805,7 +935,7 @@ export default function LawyerCaseMarketplace() {
                     onClick={() => { setSelectedDomain(type); setIsDomainOpen(false) }}
                     className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${selectedDomain === type ? 'bg-[#f6ede1] text-[#997953] font-medium dark:bg-[#cdaa80]/20 dark:text-[#cdaa80]' : 'text-[#5b4b3d] hover:bg-[#f8f1e7] hover:text-[#443831] dark:text-white/80 dark:hover:bg-[#213a56] dark:hover:text-[#cdaa80]'}`}
                   >
-                    {formatDomain(type)}
+                    {toDomainLabel(type)}
                   </button>
                 ))}
               </div>
@@ -893,6 +1023,7 @@ export default function LawyerCaseMarketplace() {
               filteredCases.map(caseItem => {
                 const budget = formatBudget(caseItem.budget_min, caseItem.budget_max)
                 const posted = timeAgo(caseItem.created_at)
+                const isOfferSent = offeredCaseIds.has(caseItem.id)
                 const confidence = caseItem.confidence_score
                   ? `${(caseItem.confidence_score * 100).toFixed(0)}%`
                   : null
@@ -922,7 +1053,7 @@ export default function LawyerCaseMarketplace() {
                       <div className="flex-1 space-y-3">
                         <div className="flex justify-between items-start gap-4">
                           <span className="inline-block px-1.5 py-0.5 bg-[#0f1e3f]/10 rounded text-[10px] font-bold tracking-wider font-sans text-[#0f1e3f]/70 uppercase">
-                            {formatDomain(caseItem.domain)}
+                            {toDomainLabel(caseItem.domain)}
                           </span>
                           <div className="md:hidden text-right font-sans">
                             <div className="text-lg font-bold font-serif">{budget}</div>
@@ -974,11 +1105,16 @@ export default function LawyerCaseMarketplace() {
                             </button>
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); void handleAcceptAvailable(caseItem.id) }}
-                              disabled={acceptingCaseId === caseItem.id}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setOfferAmountInput('25000')
+                                setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
+                                setSelectedAvailable(caseItem)
+                              }}
+                              disabled={isOfferSent}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[180px] ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
                             >
-                              {acceptingCaseId === caseItem.id ? 'Accepting…' : 'Accept offer'}
+                              {isOfferSent ? 'Waiting acceptance' : 'Send offer'}
                             </button>
                           </div>
                         </div>
@@ -999,11 +1135,16 @@ export default function LawyerCaseMarketplace() {
                           </button>
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); void handleAcceptAvailable(caseItem.id) }}
-                            disabled={acceptingCaseId === caseItem.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setOfferAmountInput('25000')
+                              setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
+                              setSelectedAvailable(caseItem)
+                            }}
+                            disabled={isOfferSent}
                             className={`px-6 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 mt-4 text-center ${hoveredCard === caseItem.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
                           >
-                            {acceptingCaseId === caseItem.id ? 'Accepting…' : 'Accept offer'}
+                            {isOfferSent ? 'Waiting acceptance' : 'Send offer'}
                           </button>
                         </div>
                       </div>
@@ -1042,7 +1183,7 @@ export default function LawyerCaseMarketplace() {
                 </svg>
                 <h3 className="text-xl font-serif text-[#997953] dark:text-[#cdaa80] mb-2">No incoming requests</h3>
                 <p className="text-gray-600 dark:text-white/60 font-sans max-w-md">
-                  No citizens have requested you yet. When they do, requests will appear here for you to accept.
+                  No citizens have requested you yet. When they do, requests will appear here for review and offer submission.
                 </p>
               </div>
             ) : (
@@ -1084,7 +1225,7 @@ export default function LawyerCaseMarketplace() {
                         <div className="flex justify-between items-start gap-4">
                           <div className="flex items-center gap-2">
                             <span className="inline-block px-1.5 py-0.5 bg-[#0f1e3f]/10 rounded text-[10px] font-bold tracking-wider font-sans text-[#0f1e3f]/70 uppercase">
-                              {formatDomain(caseData.domain)}
+                              {toDomainLabel(caseData.domain)}
                             </span>
                             <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider font-sans uppercase bg-amber-500/20 text-amber-700">
                               {isOfferSent ? 'Offer Sent' : 'Incoming'}
@@ -1131,7 +1272,12 @@ export default function LawyerCaseMarketplace() {
                           <div className="flex gap-2 flex-wrap">
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); setSelectedDispatch(item) }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
+                                if (entry) setSelectedDispatch(entry);
+                                else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
+                              }}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[160px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'}`}
                             >
                               View case
@@ -1142,7 +1288,9 @@ export default function LawyerCaseMarketplace() {
                                 e.stopPropagation()
                                 setOfferAmountInput('25000')
                                 setOfferMessageInput('Scope, timeline, engagement type, and next steps...')
-                                setSelectedDispatch(item)
+                                const entry = incomingDispatches.find(d => d.dispatch.id === dispatch.id);
+                                if (entry) setSelectedDispatch(entry);
+                                else setSelectedDispatch({ dispatch, caseData, offerStage: null, offerSentAt: null });
                               }}
                               disabled={isOfferSent}
                               className={`md:hidden px-5 py-1.5 border border-[#0f1e3f]/30 rounded-lg text-sm font-medium font-sans transition-all duration-300 text-center mt-2 w-full max-w-[180px] ${hoveredCard === dispatch.id ? 'bg-[#0f1e3f] text-[#cdaa80]' : 'hover:bg-[#0f1e3f]/5'} disabled:opacity-60`}
@@ -1207,7 +1355,7 @@ export default function LawyerCaseMarketplace() {
                     {selectedAvailable?.title ?? 'Untitled Case'}
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-sm font-sans text-[#5b4b3d] dark:text-white/70">
-                    {selectedAvailable ? formatDomain(selectedAvailable.domain) : ''}
+                    {selectedAvailable ? toDomainLabel(selectedAvailable.domain) : ''}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close className="rounded-lg px-3 py-1.5 text-sm font-sans border border-[#d8c1a1] dark:border-[#cdaa80]/30 hover:bg-[#f9f4ec] dark:hover:bg-[#12254a]">
@@ -1253,6 +1401,52 @@ export default function LawyerCaseMarketplace() {
                       </span>
                     )}
                   </div>
+
+                  <div className="rounded-xl border border-[#e7d9c7] dark:border-[#cdaa80]/20 p-3 space-y-3">
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide font-bold text-[#997953] dark:text-[#cdaa80]">
+                        Offer amount (INR)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={offerAmountInput}
+                        onChange={(e) => setOfferAmountInput(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-[#0f1e3f]/20 bg-[#fdf9f3] dark:bg-[#12284f]/70 px-3 py-2 text-sm font-sans text-[#0f1e3f] dark:text-white/85 outline-none focus:ring-2 focus:ring-[#cdaa80]/40"
+                        placeholder="25000"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide font-bold text-[#997953] dark:text-[#cdaa80]">
+                        Offer message
+                      </label>
+                      <textarea
+                        rows={4}
+                        value={offerMessageInput}
+                        onChange={(e) => setOfferMessageInput(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-[#0f1e3f]/20 bg-[#fdf9f3] dark:bg-[#12284f]/70 px-3 py-2 text-sm font-sans text-[#0f1e3f] dark:text-white/85 outline-none focus:ring-2 focus:ring-[#cdaa80]/40"
+                        placeholder="Scope, timeline, engagement type, and next steps..."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedAvailable(null) }}
+                      className="px-4 py-2 rounded-lg text-sm font-sans border border-[#d8c1a1] dark:border-[#cdaa80]/30 hover:bg-[#f9f4ec] dark:hover:bg-[#12254a]"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { if (selectedAvailable) void handleSendOfferForAvailable(selectedAvailable, offerAmountInput, offerMessageInput) }}
+                      disabled={sendingOffer || (selectedAvailable ? offeredCaseIds.has(selectedAvailable.id) : false)}
+                      className="px-4 py-2 rounded-lg text-sm font-sans border border-[#0f1e3f]/30 bg-[#0f1e3f] text-[#cdaa80] hover:bg-[#0f1e3f]/90 disabled:opacity-60"
+                    >
+                      {sendingOffer ? 'Sending…' : (selectedAvailable && offeredCaseIds.has(selectedAvailable.id)) ? 'Waiting acceptance' : 'Send offer'}
+                    </button>
+                  </div>
                 </div>
               )}
             </Dialog.Content>
@@ -1270,7 +1464,7 @@ export default function LawyerCaseMarketplace() {
                     {selectedDispatch?.caseData.title ?? 'Untitled Case'}
                   </Dialog.Title>
                   <Dialog.Description className="mt-1 text-sm font-sans text-[#5b4b3d] dark:text-white/70">
-                    {selectedDispatch ? formatDomain(selectedDispatch.caseData.domain) : ''}
+                    {selectedDispatch ? toDomainLabel(selectedDispatch.caseData.domain) : ''}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close className="rounded-lg px-3 py-1.5 text-sm font-sans border border-[#d8c1a1] dark:border-[#cdaa80]/30 hover:bg-[#f9f4ec] dark:hover:bg-[#12254a]">
