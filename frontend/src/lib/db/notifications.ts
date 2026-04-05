@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
-import type { Database } from '@/types/supabase'
+import type { Database, Json } from '@/types/supabase'
 
 type NotificationType = Database['public']['Enums']['notification_type']
 
@@ -8,7 +8,7 @@ export async function createNotification(payload: {
   type: NotificationType
   title: string
   body?: string | null
-  data?: Record<string, unknown> | null
+  data?: Json | null
 }) {
   const { data, error } = await supabase
     .from('notifications')
