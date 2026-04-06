@@ -1,12 +1,20 @@
+# Never needed - OS/environment specific
 venv/
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Secrets - go in Railway Variables instead
 .env
-.pytest_cache/
-nyayai_cases.db
-uploads/
+
+# Local test output - generated at runtime, too large for image
 output_docs/
-data/
-.vscode/
-.git/
-.python-version
+
+# Empty runtime folder - created by the app on startup
+uploads/
+
+# Local SQLite test data - not persistent in Docker anyway
+nyayai_cases.db
+
+# Test files - not needed in production
+tests/
