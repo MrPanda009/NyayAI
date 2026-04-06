@@ -43,8 +43,10 @@ class Neo4jClient:
         if self._driver is None:
             return {"enabled": True, "available": False, "reason": "driver_not_initialized"}
 
+        # Use None to let Aura's routing table pick the default database automatically
+        db = self.database if self.database != "neo4j" else None
         try:
-            with self._driver.session(database=self.database) as session:
+            with self._driver.session(database=db) as session:
                 result = session.run("MATCH (n) RETURN n LIMIT 1")
                 record = result.single()
             return {
@@ -62,9 +64,10 @@ class Neo4jClient:
             return []
 
         query_params = params or {}
+        db = self.database if self.database != "neo4j" else None
 
         try:
-            with self._driver.session(database=self.database) as session:
+            with self._driver.session(database=db) as session:
                 result = session.run(query, query_params)
                 return [record.data() for record in result]
         except Neo4jError as exc:
@@ -79,9 +82,10 @@ class Neo4jClient:
             return
 
         query_params = params or {}
+        db = self.database if self.database != "neo4j" else None
 
         try:
-            with self._driver.session(database=self.database) as session:
+            with self._driver.session(database=db) as session:
                 session.run(query, query_params)
         except Neo4jError as exc:
             logger.exception("Neo4j write query failed: %s", exc)
