@@ -5,12 +5,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# We assume the build context will be the 'backend' directory for Railway
-# But keep it compatible with root context if needed
 COPY requirements.txt .
 
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install -r requirements.txt
+# Install CPU-only PyTorch FIRST to prevent pip from pulling the massive CUDA version.
+# This saves ~2GB compared to the default pip install of torch.
+RUN pip install --no-cache-dir torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Now install the rest of the requirements (sentence-transformers will reuse the CPU torch)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
