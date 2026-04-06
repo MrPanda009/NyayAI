@@ -27,3 +27,4 @@ backend/output_docs/
 # OS
 .DS_Store
 Thumbs.db
+backend/deploynment_steps.md
